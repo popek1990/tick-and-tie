@@ -78,7 +78,6 @@ export const INDEXER_ROUTES = Object.freeze([
 // JSON-RPC methods this page may send. Every element of a batch is checked against this list (R6, R8).
 export const RPC_METHODS = Object.freeze([
   "eth_chainId",
-  "eth_blockNumber",
   "eth_getBlockByNumber",
   "eth_getTransactionReceipt",
   "eth_call",
@@ -337,7 +336,6 @@ export function checkCall(c) {
   if (!Array.isArray(params)) throw new Refused("refused: params");
   switch (method) {
     case "eth_chainId":
-    case "eth_blockNumber":
       if (params.length) throw new Refused("refused: params");
       return;
     case "eth_getBlockByNumber":

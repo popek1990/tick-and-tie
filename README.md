@@ -97,7 +97,7 @@ THE SOCIETY'S LOG (each step with its result), and NOT VERIFIED (never empty).
 JSON-RPC is POST by protocol. The society's own `/human/economy` reads Base the same way. This page sends these
 methods and no others:
 
-`eth_chainId`, `eth_blockNumber`, `eth_getBlockByNumber`, `eth_getTransactionReceipt`, `eth_call`, `eth_getLogs`
+`eth_chainId`, `eth_getBlockByNumber`, `eth_getTransactionReceipt`, `eth_call`, `eth_getLogs`
 
 `eth_call` may target only USDC, 1F916 and WETH, with a read selector (`balanceOf`, `decimals`, `symbol`,
 `totalSupply`), each derived from its signature with the page's own keccak-256. `eth_getLogs` spans at most
