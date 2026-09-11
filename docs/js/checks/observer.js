@@ -9,7 +9,7 @@
 //   1. prints how far behind finality the mark is, and the cycles it needs to catch up (arithmetic on the
 //      registry's own walk_note, shown as such);
 //   2. walks the same wallet itself (committed baseline + live stretch), classifies every transfer with the
-//      registry's own rule (classifyTransfer, ported below), and ties every payment at two nodes;
+//      registry's own rule (classifyTransfer's, written again below), and ties every payment at two nodes;
 //   3. splits them at the mark. After it: payments the rail cannot count yet. Before it: payments the rail should
 //      already count, set against GET /api/rail → listings[].observed_payments. The second half is what turns a
 //      line green the day the observer catches up, instead of going quiet.
@@ -85,8 +85,10 @@ export async function replay(mark, finalized) {
 }
 
 /**
- * src/observer.ts classifyTransfer (commit c0c1afab), ported line for line. `bindings` are every worker and
- * verifier binding on the funder's listings, as its bindingIndexFor reads them; `t` is {to, token, value}.
+ * The registry's own rule for one transfer, as src/observer.ts classifyTransfer applies it (commit c0c1afab),
+ * written again for this page's shapes (no code copied) and held to it case by case in test/checks.test.mjs.
+ * `bindings` are every worker and verifier binding on the funder's listings, as its bindingIndexFor reads them;
+ * `t` is {to, token, value}.
  *   a zero value                                         → zero_value (the address-poisoning pattern)
  *   no binding on the funder's listings at that address  → other
  *   exactly one listing has a binding with the same address, amount and asset → a payment credited to it

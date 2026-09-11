@@ -6,7 +6,7 @@
 
 import { reveal, isAddress, lc, short, overlap, isTxHash } from "./codec.js";
 import { LABEL, SHORT, STATE, footing } from "./lines.js";
-import { NODES } from "./net.js";
+import { NODES, LINK_ORIGINS } from "./net.js";
 
 const SVGNS = "http://www.w3.org/2000/svg";
 const HANDLE = /^[A-Za-z0-9_.-]{1,64}$/;
@@ -35,6 +35,11 @@ export function el(tag, props, ...kids) {
  * registry path. Pure, so the tests can throw hostile values at it.
  */
 export function linkHref(kind, value) {
+  const t = buildHref(kind, value);
+  return t && (!t.external || LINK_ORIGINS.includes(new URL(t.href).origin)) ? t : null;
+}
+
+function buildHref(kind, value) {
   if (typeof value !== "string") return null;
   if (kind === "route") return /^#\/[A-Za-z0-9/_.-]*$/.test(value) ? { href: value, external: false } : null;
   if (kind === "citizen") return HANDLE.test(value) && !/^\.+$/.test(value) ? { href: `https://1f916.ai/api/citizen/${encodeURIComponent(value)}`, external: true } : null;

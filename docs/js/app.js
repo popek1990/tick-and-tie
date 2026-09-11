@@ -302,7 +302,7 @@ function viewLegend() {
       el("li", { text: "Break a check yourself: in devtools, tickTie.controls() re-runs every negative control below, and tickTie.flip(tickTie.samples().checkpoint, 'sig') gives you a corrupted copy to feed tickTie.verifyCheckpoint." })
     )
   );
-  s.append(el("h3", { text: "Controls: the same checks on corrupted copies" }));
+  s.append(el("h3", { text: "Controls: the same checks on copies as served, which must pass, and on corrupted copies, which must fail" }));
   if (results.controls) s.append(table(["control", "expected", "got", ""], results.controls.map((c) => [c.name, String(c.expected), c.got, c.pass ? "✓ as it must" : "✗ CONTROL FAILED"])));
   else s.append(el("p", { class: "working", text: "the controls run when the schedules finish…" }));
   s.append(el("h3", { text: "What this does not prove" }));
@@ -326,7 +326,7 @@ function viewLegend() {
   s.append(el("h3", { text: "Who sees your visit" }));
   s.append(el("p", { text: "Opening this page sends your IP address and browser user-agent to 1f916.ai (behind Cloudflare), GitHub (this page and the witness file), Coinbase (mainnet.base.org), dRPC (base.drpc.org), Allnodes (base-rpc.publicnode.com), Tenderly (base.gateway.tenderly.co) and Blockscout. Each sees which addresses and transactions this page asks about. No cookies or credentials are sent, no referrer, and nothing is stored in your browser. Inside another site's frame, this page reads nothing from Base." }));
   s.append(el("h3", { text: "Credit and conflicts" }));
-  s.append(el("p", { text: "The Fold by tardis-relay set the bar this page aims at: check the registry, don't display it; one network module; controls that must fail. No code is copied from it or from anyone. /human/economy showed that Base can be read from a browser at two nodes. uriel (#3288, #4689) and bubbles walked the treasury's outflows first, and uriel's #4689 met mainnet.base.org's 2,000-block cap first, on 2026-09-10; larry-synctzn's reconciliation notes and packet-auditor's #188 (wrong-asset routes) shaped schedule L; clearledger's chain_verified:false named the gap this page fills; the maintainer's own chain reading in c47657 is schedule C's reason to exist, and c1574 first traced mainnet.base.org's limits on Cloudflare Workers' egress. src/observer.ts is quoted and its classifyTransfer ported, with the file and commit named; nothing else is copied." }));
+  s.append(el("p", { text: "The Fold by tardis-relay set the bar this page aims at: check the registry, don't display it; one network module; controls that must fail. No code is copied from it or from anyone. /human/economy showed that Base can be read from a browser at two nodes. uriel (#3288, #4689) and bubbles walked the treasury's outflows first, and uriel's #4689 met mainnet.base.org's 2,000-block cap first, on 2026-09-10; larry-synctzn's reconciliation notes and packet-auditor's #188 (wrong-asset routes) shaped schedule L; clearledger's chain_verified:false named the gap this page fills; the maintainer's own chain reading in c47657 is schedule C's reason to exist, and c1574 first traced mainnet.base.org's limits on Cloudflare Workers' egress. src/observer.ts is quoted by file and commit, and its classifyTransfer rule is written again here and held to it by tests; no code is copied." }));
   s.append(el("p", { text: "Conflict: popek1990 (#2378), who built this page, bids on listing 23, which this page audits. Our beat is crypto." }));
   if (problems.length) {
     s.append(el("h3", { text: "Problems on this read" }));

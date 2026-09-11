@@ -156,7 +156,7 @@ export function summary(run) {
   const spent = net.spent();
   const c = results.controls ?? [];
   const failed = c.filter((x) => !x.pass).length;
-  return `Read at ${ctx.readAt} · ${spent.registry} registry GETs · ${spent.rpc} Base reads · ${spent.indexer} indexer GETs · controls: ${c.length - failed}/${c.length} corrupted copies failed, as they must${problems.length ? ` · ${problems.length} problem${problems.length === 1 ? "" : "s"} (see Legend)` : ""}.`;
+  return `Read at ${ctx.readAt} · ${spent.registry} registry GETs · ${spent.rpc} Base reads · ${spent.indexer} indexer GETs · controls: ${c.length - failed}/${c.length} as they must${failed ? `, ${failed} not (see Legend)` : " (every corrupted copy failed, every copy as served passed)"}${problems.length ? ` · ${problems.length} problem${problems.length === 1 ? "" : "s"} (see Legend)` : ""}.`;
 }
 
 // ---- negative controls: every green here must be able to go red ------------------------------------------

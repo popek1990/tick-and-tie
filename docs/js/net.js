@@ -50,6 +50,10 @@ export const FETCH_ORIGINS = Object.freeze([
   "https://base.gateway.tenderly.co",
 ]);
 
+// Where a link on the page may point. ui.js linkHref() builds every href and refuses any other origin;
+// check-readonly R4 reads this same list.
+export const LINK_ORIGINS = Object.freeze(["https://1f916.ai", "https://base.blockscout.com", "https://github.com"]);
+
 // Registry paths this page reads, each GET, auth none, writes false in GET /api/surface (check-readonly H2).
 // Query keys are allowlisted per route; anything else is refused.
 export const REGISTRY_ROUTES = Object.freeze([
