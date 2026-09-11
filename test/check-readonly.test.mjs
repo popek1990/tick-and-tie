@@ -40,6 +40,9 @@ test("the tokenizer: words in comments, strings and regex literals are not code"
   ].join("\n"));
   const sites = [...s.code.matchAll(/(?<![\w$])fetch\s*\(/g)].map((m) => s.lineOf(m.index));
   assert.deepEqual(sites, [4]);
+  // a "/" after an object literal is division, after an if (…) a regex: neither may hide a call
+  const t = scanJs(['const a = {x: 1}/fetch("u")/3;', 'if (x) /"/.test(s); fetch("v");', "const b = i++ / 2; fetch(1);"].join("\n"));
+  assert.deepEqual([...t.code.matchAll(/(?<![\w$])fetch\s*\(/g)].map((m) => t.lineOf(m.index)), [1, 2, 3]);
   const h = scanHtml('<p>&lt;input&gt;</p><!-- <input> --><button type="button">x</button>');
   assert.deepEqual(h.tags.filter((t) => !t.closing).map((t) => t.name), ["p", "button"]);
 });

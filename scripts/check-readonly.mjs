@@ -164,8 +164,12 @@ function lines(text) {
 // Returns two masked copies of the source, same length and same line breaks:
 //   code:    comments AND the contents of strings, template chunks and regex literals blanked
 //   codeStr: comments blanked, literals kept
-// plus the string literals themselves. A "/" starts a regex unless the previous token ends an expression.
+// plus the string literals themselves. A "/" starts a regex unless the previous token ends an expression; to know
+// that after a "}" or ")", every bracket remembers what it opened: an object literal or a block, a call or an
+// if/while/for condition. So `{a:1}/f(x)/3` is division, and `if (x) /re/.test(s)` is a regex.
 const REGEX_AFTER_WORD = new Set(["return", "typeof", "instanceof", "in", "of", "new", "delete", "void", "throw", "case", "do", "else", "yield", "await"]);
+const OBJECT_AFTER = new Set(["(", ",", "=", ":", "[", "!", "&", "|", "?", "+", "-", "*", "%", "<", ">", "~", "^", "${", "return", "typeof", "instanceof", "in", "of", "new", "delete", "void", "throw", "case", "yield", "await", "default"]);
+const CONDITION_AFTER = new Set(["if", "while", "for", "with"]);
 export function scanJs(src) {
   const code = src.split("");
   const codeStr = src.split("");
@@ -175,9 +179,9 @@ export function scanJs(src) {
   };
   const n = src.length;
   let i = 0;
-  let prev = "start"; // "value" when the last token ended an expression
-  let braces = 0;
-  const tpl = []; // brace depth at each open ${
+  let prev = "start"; // "value" when the last token ended an expression (a "/" here is division)
+  let last = ""; // the last significant token: a punctuator, "=>", "${", a word, or "value" for a literal
+  const stack = []; // per open bracket: "obj" | "block" | "tpl" | "cond" | "call"
   const template = (from) => {
     // scans a template chunk from `from`; returns the index after the closing ` or after ${
     let j = from;
@@ -187,13 +191,14 @@ export function scanJs(src) {
         strings.push({ start: from, end: j, value: src.slice(from, j) });
         blank(code, from, j);
         prev = "value";
+        last = "value";
         return j + 1;
       } else if (src[j] === "$" && src[j + 1] === "{") {
         strings.push({ start: from, end: j, value: src.slice(from, j) });
         blank(code, from, j);
-        tpl.push(braces);
-        braces = 0;
+        stack.push("tpl");
         prev = "start";
+        last = "${";
         return j + 2;
       } else j++;
     }
@@ -222,10 +227,11 @@ export function scanJs(src) {
       blank(code, i + 1, j);
       i = j + 1;
       prev = "value";
+      last = "value";
     } else if (c === "`") {
       i = template(i + 1);
-    } else if (c === "}" && tpl.length && braces === 0) {
-      braces = tpl.pop();
+    } else if (c === "}" && stack[stack.length - 1] === "tpl") {
+      stack.pop();
       i = template(i + 1);
     } else if (c === "/" && prev !== "value") {
       let j = i + 1;
@@ -246,21 +252,51 @@ export function scanJs(src) {
       while (j < n && /[a-z]/i.test(src[j])) j++;
       i = j;
       prev = "value";
+      last = "value";
     } else if (/[A-Za-z_$]/.test(c)) {
       let j = i + 1;
       while (j < n && /[\w$]/.test(src[j])) j++;
       const w = src.slice(i, j);
-      prev = REGEX_AFTER_WORD.has(w) ? "start" : "value";
+      prev = REGEX_AFTER_WORD.has(w) && src[i - 1] !== "." ? "start" : "value";
+      last = w;
       i = j;
     } else if (/[0-9]/.test(c)) {
       let j = i + 1;
       while (j < n && /[\w.]/.test(src[j])) j++;
       prev = "value";
+      last = "value";
       i = j;
+    } else if (/\s/.test(c)) {
+      i++;
+    } else if (c === "{") {
+      stack.push(OBJECT_AFTER.has(last) ? "obj" : "block");
+      prev = "start";
+      last = "{";
+      i++;
+    } else if (c === "}" || c === ")") {
+      const opened = stack.pop();
+      prev = opened === "block" || opened === "cond" ? "start" : "value"; // after an object literal or a call: a value
+      last = prev === "value" ? "value" : c;
+      i++;
+    } else if (c === "(") {
+      stack.push(CONDITION_AFTER.has(last) ? "cond" : "call");
+      prev = "start";
+      last = "(";
+      i++;
+    } else if (c === "]") {
+      prev = "value";
+      last = "value";
+      i++;
+    } else if (c === "=" && d === ">") {
+      prev = "start";
+      last = "=>";
+      i += 2;
+    } else if ((c === "+" || c === "-") && d === c) {
+      if (prev !== "value") last = c + c; // prefix ++x starts an expression; postfix x++ stays a value
+      i += 2;
     } else {
-      if (c === "{") braces++;
-      else if (c === "}") braces--;
-      if (!/\s/.test(c)) prev = c === ")" || c === "]" ? "value" : "start";
+      prev = "start";
+      last = c;
       i++;
     }
   }
@@ -467,7 +503,7 @@ function R1(ctx) {
 const NET_APIS = [
   [/\bXMLHttpRequest\b/g, "XMLHttpRequest"], [/\bsendBeacon\b/g, "sendBeacon (a beacon is a POST)"], [/\bfetchLater\b/g, "fetchLater"],
   [/\bWebSocket\b/g, "WebSocket"], [/\bEventSource\b/g, "EventSource"], [/\bWebTransport\b/g, "WebTransport"],
-  [/\bRTCPeerConnection\b/g, "RTCPeerConnection"], [/\bimportScripts\b/g, "importScripts"], [/\bnew\s+(?:Shared)?Worker\b/g, "a worker"],
+  [/\bRTCPeerConnection\b/g, "RTCPeerConnection"], [/\bimportScripts\b/g, "importScripts"], [/\bnew\s+[\w$.]*Worker\b/g, "a worker"],
   [/\bserviceWorker\b/g, "serviceWorker"], [/\bnew\s+(?:Image|Audio)\s*\(/g, "new Image()/Audio() (loads a URL)"],
   [/\.\s*src\s*=(?!=)/g, ".src = (loads a URL)"], [/\bwindow\s*\.\s*open\s*\(/g, "window.open()"],
   [/\blocation\s*\.\s*(?:assign|replace)\s*\(/g, "location.assign()/replace()"], [/\blocation\s*\.\s*href\s*=(?!=)/g, "location.href ="],
@@ -482,6 +518,10 @@ function R2(ctx) {
       else F.push(hitAt(j.rel, j.s, m.index, "fetch referenced without a call (an alias is a second sink)"));
     }
     for (const [re, what] of NET_APIS) grep(F, j.rel, j.s, j.s.code, re, what);
+    // the same APIs reached through a string key: globalThis["fetch"], x["src"] = …, window["open"]
+    grep(F, j.rel, j.s, j.s.codeStr, /\[\s*(["'`])(fetch|fetchLater|XMLHttpRequest|sendBeacon|WebSocket|EventSource|WebTransport|RTCPeerConnection|importScripts|Worker|SharedWorker|serviceWorker|Image|Audio)\1\s*\]/g, (m) => `["${m[2]}"]: a network API through a string key`);
+    grep(F, j.rel, j.s, j.s.codeStr, /\[\s*(["'`])(src|srcset)\1\s*\]\s*=(?!=)/g, (m) => `["${m[2]}"] = (loads a URL)`);
+    grep(F, j.rel, j.s, j.s.codeStr, /\b(?:window|globalThis|self)\s*\[\s*(["'`])(open|location)\1\s*\]|\blocation\s*\[\s*(["'`])(href|assign|replace)\3\s*\]/g, (m) => `${m[0].replace(/\s+/g, "")}: a navigation through a string key`);
     grep(F, j.rel, j.s, j.s.codeStr, /\bcreateElement(?:NS)?\s*\(\s*(?:[^,()]*,\s*)?(["'`])(script|img|link|iframe|audio|video|source|track|embed|object)\1/gi, (m) => `createElement("${m[2]}") can load a URL`);
     for (const m of j.s.code.matchAll(/(?<![\w$.])import\s*\(/g)) {
       const after = j.s.codeStr.slice(m.index + m[0].length).match(/^\s*(["'])(\.{1,2}\/[^"'\n]+\.js)\1\s*\)/);
@@ -704,7 +744,7 @@ function R6(ctx) {
   const tf = textFiles(ctx);
   for (const { f, s } of tf) grep(F, f.rel, s, f.text, RPC_BANNED, (x) => `${x[0]}: a send, sign, wallet, filter or debug method`);
   const list = Array.isArray(m) ? `${m.length}, ${Object.isFrozen(m) ? "frozen" : "NOT frozen"}: ${[...m].sort().join(" ")}` : "unreadable";
-  return result("R6", "JSON-RPC methods", F, `JSON-RPC methods (${list}) · 0 send/sign/wallet strings in ${plural(tf.length, "served text file")}${ctx.readme ? " · README list == net.js" : ""}`, notes);
+  return result("R6", "JSON-RPC methods", F, `JSON-RPC methods (${list}) · 0 send/sign/wallet strings in ${plural(tf.length, "served text file")}${ctx.readme && Array.isArray(m) ? " · README list == net.js" : ""}`, notes);
 }
 
 function R7(ctx) {
@@ -1015,6 +1055,21 @@ function T1(ctx) {
   return result("T1", "HTML", F, `0 input/textarea/select/form/option/datalist/output/label/fieldset/legend/iframe/object/embed/foreignObject · 0 contenteditable · 0 textbox roles · ${count.button} <button type="button">, ${count.details} <details>, ${count.dialog} <dialog>, ${count.a} links in ${plural(ctx.html.length, "page")}`);
 }
 
+/**
+ * Property writes that name the property in a string or an object literal instead of after a dot: x["href"] = …,
+ * Object.assign(x, { innerHTML: … }), Object.defineProperty(x, "src", …), Reflect.set(x, "onclick", …).
+ */
+function reflectiveWrites(s) {
+  const out = [];
+  for (const m of s.codeStr.matchAll(/\[\s*(["'`])([\w:-]+)\1\s*\]\s*=(?!=)\s*/g)) out.push({ off: m.index, key: m[2], how: `["${m[2]}"] =`, rhs: s.codeStr.slice(m.index + m[0].length) });
+  for (const m of s.code.matchAll(/\b(Object\s*\.\s*(?:assign|defineProperty|defineProperties)|Reflect\s*\.\s*(?:set|defineProperty))\s*\(/g)) {
+    const open = m.index + m[0].length - 1;
+    const args = s.codeStr.slice(open, closer(s.code, open) + 1);
+    for (const k of args.matchAll(/(?:^|[{,(\s])(["'`]?)([\w:-]+)\1\s*[:,]/g)) out.push({ off: m.index, key: k[2], how: m[1].replace(/\s+/g, ""), rhs: "" });
+  }
+  return out;
+}
+
 function T2(ctx) {
   const F = [];
   const tags = FORBIDDEN_TAGS.join("|");
@@ -1040,8 +1095,43 @@ function T2(ctx) {
       const rhs = j.s.codeStr.slice(m.index + m[0].length);
       if (!ok(m.index) && !/^(["'`])#/.test(rhs)) F.push(hitAt(j.rel, j.s, m.index, `setAttribute("${m[2]}") outside safeLink()`));
     }
+    for (const w of reflectiveWrites(j.s)) {
+      if (/^(href|src|srcset|action|formaction|ping)$/i.test(w.key) && !ok(w.off) && !/^(["'`])#/.test(w.rhs)) F.push(hitAt(j.rel, j.s, w.off, `${w.how} sets ${w.key} outside safeLink()`));
+      if (/^(contenteditable|on(click|dblclick|auxclick|contextmenu|mouse\w+|pointer\w+|touch\w+|key\w+|input|beforeinput|change|paste|cut|copy|focus|blur|submit|load|error|message|wheel|drag\w*|drop|composition\w+|toggle|scroll))$/i.test(w.key)) F.push(hitAt(j.rel, j.s, w.off, `${w.how} sets ${w.key}`));
+    }
   }
-  return result("T2", "JS", F, `0 key/input/paste/message listeners · 0 prompt/clipboard/designMode/contentEditable · 0 createElement of field tags · href/src only in safeLink() or as #fragments`);
+  // Element factories: functions that call createElement(NS) with a variable tag, like ui.js el(tag, props). A literal
+  // tag handed to one is checked like a createElement literal, and a "button" must be given type: "button".
+  const decl = /\bfunction\s+([A-Za-z_$][\w$]*)\s*\(|\b(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=\s*(?:async\s*)?(?:function\b[^(]*)?\(/g;
+  const factories = new Set();
+  for (const j of ctx.js) {
+    const names = [...j.s.code.matchAll(decl)].map((x) => x[1] ?? x[2]);
+    for (const m of j.s.code.matchAll(/\bcreateElement(?:NS)?\s*\(\s*(?:[^,()]*,\s*)?[A-Za-z_$][\w$]*\s*\)/g)) {
+      for (const name of names) {
+        const b = fnBody(j.s, name);
+        if (b && m.index >= b[0] && m.index < b[1]) factories.add(name);
+      }
+    }
+  }
+  for (const j of ctx.js) {
+    for (const name of factories) {
+      for (const m of j.s.codeStr.matchAll(new RegExp(`(?<![\\w$.])${escRe(name)}\\s*\\(\\s*(["'\`])([\\w-]+)\\1`, "g"))) {
+        const tag = m[2].toLowerCase();
+        if (FORBIDDEN_TAGS.includes(tag)) F.push(hitAt(j.rel, j.s, m.index, `${name}("${m[2]}") builds a field, form vocabulary or a frame`));
+        if (tag !== "button") continue;
+        let k = m.index + m[0].length;
+        while (/\s/.test(j.s.code[k] ?? "")) k++;
+        if (j.s.code[k] === ",") k++;
+        while (/\s/.test(j.s.code[k] ?? "")) k++;
+        const props = j.s.code[k] === "{" ? j.s.codeStr.slice(k, closer(j.s.code, k) + 1) : "";
+        if (!/\btype\s*:\s*(["'])button\1/.test(props)) F.push(hitAt(j.rel, j.s, m.index, `${name}("button") without type: "button"`));
+      }
+    }
+    grep(F, j.rel, j.s, j.s.codeStr, /[{,]\s*(["']?)(contenteditable|srcdoc)\1\s*:/gi, (m) => `an attribute key ${m[2]} (a generic attribute helper would set it)`);
+    grep(F, j.rel, j.s, j.s.codeStr, /[{,]\s*(["']?)role\1\s*:\s*(["'`])(textbox|searchbox|combobox|spinbutton)\2/gi, (m) => `role: "${m[3]}"`);
+  }
+  const fac = factories.size ? ` · element factories checked: ${[...factories].map((f) => f + "()").join(", ")}` : "";
+  return result("T2", "JS", F, `0 key/input/paste/message listeners · 0 prompt/clipboard/designMode/contentEditable · 0 field tags built (createElement or a factory) · buttons typed · href/src only in safeLink() or as #fragments${fac}`);
 }
 
 function T3(ctx) {
@@ -1062,6 +1152,7 @@ function T4(ctx) {
     const g = (text, re, msg) => grep(F, j.rel, j.s, text, re, msg);
     g(j.s.code, /\b(?:innerHTML|outerHTML|insertAdjacentHTML|DOMParser|createContextualFragment|srcdoc|setHTMLUnsafe|parseHTMLUnsafe)\b|\bdocument\s*\.\s*write(?:ln)?\b/g, (m) => `${m[0].replace(/\s+/g, "")}: an HTML sink (use textContent/createElement)`);
     g(j.s.codeStr, /\[\s*(["'`])(innerHTML|outerHTML|insertAdjacentHTML|srcdoc|setHTMLUnsafe)\1\s*\]/g, (m) => `["${m[2]}"]: an HTML sink through a string key`);
+    for (const w of reflectiveWrites(j.s)) if (/^(innerHTML|outerHTML|srcdoc)$/.test(w.key) && !w.how.startsWith("[")) F.push(hitAt(j.rel, j.s, w.off, `${w.how} sets ${w.key}: an HTML sink`));
     g(j.s.code, /\beval\s*\(|\bFunction\s*\(/g, (m) => `${m[0]}: code from a string`);
     g(j.s.codeStr, /\bset(?:Timeout|Interval)\s*\(\s*["'`]/g, "a timer given a string (eval)");
   }
@@ -1407,6 +1498,13 @@ const PLANTS = [
   P("T2", "reading the clipboard", inJs("navigator.clipboard.readText();")),
   P("T2", "createElement of a textarea", inJs('document.createElement("textarea");')),
   P("T2", "an inline handler set from JS", inJs('document.body.setAttribute("onclick", "x()");')),
+  P("T2", "a field built through an element factory", inJs('function mk(tag) { return document.createElement(tag); }\n  mk("input");')),
+  P("T2", "a factory-built <button> without type", inJs('function mk(tag, props) { return document.createElement(tag); }\n  mk("button", { class: "x" });')),
+  P("T2", "contenteditable as an attribute key", inJs('const props = { contenteditable: "true" };')),
+  P("T2", 'an href written through a string key: a["href"] = …', inJs('const a = {}; a["href"] = "https://1f916.ai/api/porch/knock";')),
+  P("T4", "innerHTML set through Object.assign", inJs('Object.assign(document.body, { innerHTML: "x" });')),
+  P("R2", 'fetch through a string key: globalThis["fetch"]', inJs('const f = globalThis["fetch"]; f("https://1f916.ai/api/rail");')),
+  P("R2", "a fetch hidden after an object literal ({a:1}/fetch(…)/3)", inJs('return {a: 1}/fetch("https://1f916.ai/api/rail")/3;')),
   P("R2", "a second fetch(", inJs('return fetch("https://1f916.ai/api/rail");')),
   P("R2", "sendBeacon", inJs('navigator.sendBeacon("https://1f916.ai/api/rail", "x");')),
   P("R2", "a pixel loaded through .src =", inJs('new Image().src = "https://evil.example/p.gif";')),
