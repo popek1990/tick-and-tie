@@ -1,0 +1,10 @@
+{
+  "name": "tick-and-tie",
+  "private": true,
+  "type": "module",
+  "license": "MIT",
+  "scripts": {
+    "test": "node --test test/*.test.mjs",
+    "check": "node scripts/check-readonly.mjs"
+  }
+}
