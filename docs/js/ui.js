@@ -90,8 +90,8 @@ export function glyph(state, label) {
 /** A mark: the glyph plus, for ½ and ≠, the small sign that says why it is not a tick. */
 export function markEl(line) {
   const state = line.mark === "⏱" ? "clock" : line.mark === "◆" ? "forgery" : line.state;
-  const wrap = el("span", { class: `mark m-${line.state}`, title: line.why || LABEL[line.state] });
-  wrap.append(glyph(state, `${LABEL[line.state] ?? line.state}${line.why ? ": " + line.why : ""}`));
+  const wrap = el("span", { class: `mark m-${line.state}`, title: line.why || (line.label ?? LABEL[line.state]) });
+  wrap.append(glyph(state, `${line.label ?? LABEL[line.state] ?? line.state}${line.why ? ": " + line.why : ""}`));
   if (line.mark === "½" || line.mark === "≠") wrap.append(el("span", { class: "sub", text: line.mark }));
   return wrap;
 }
@@ -252,7 +252,7 @@ export function openDrawer(line, all = drawerLines) {
   d.append(
     ...[
       el("header", { class: "d-head" }, el("h2", { id: "drawer-title", tabindex: "-1" }, markEl(line), ` ${line.ref} · `, bdi(line.title, 160, "title")), el("div", { class: "d-nav" }, prev, next, close)),
-      el("p", { class: "d-why", text: `${LABEL[line.state]}${line.why ? ": " + line.why : ""}` }),
+      el("p", { class: "d-why", text: `${line.label ?? LABEL[line.state]}${line.why ? ": " + line.why : ""}` }),
       extra,
       ...saysBlocks,
       shows,

@@ -9,14 +9,19 @@ import { balancesAt, tieBalance, agreedValue } from "../chain.js";
 import { fromMs, isoMin, span, formatAsset, parseAtomic, lc, short, isAddress } from "../codec.js";
 import { line, STATE } from "../lines.js";
 
+// Everything still owed: outstanding_awarded splits into currently_due and overdue_unpaid (the rail's own note).
+const owed = (l) => ["outstanding_awarded_atomic", "currently_due_atomic", "overdue_unpaid_atomic"].some((k) => (parseAtomic(l.economics?.[k]) ?? 0n) > 0n);
+
 export async function scheduleF(ctx) {
   const rail = ctx.docs.rail;
   const lines = [];
-  const due = (rail?.listings ?? []).filter((l) => parseAtomic(l.economics?.currently_due_atomic) > 0n);
+  const due = (rail?.listings ?? []).filter(owed);
   const details = [];
+  const missed = [];
   for (const l of due) {
     const d = ctx.listingDetail ? await ctx.listingDetail(l.listing_id) : await registry(`/api/listings/${l.listing_id}`);
     if (d?.ok) details.push({ l, d });
+    else missed.push({ l, error: d?.error ?? "no answer" });
   }
   // One balance read per funder wallet a due listing names (in the listing's own token), all in one batch.
   const pairs = [...new Map(details.filter(({ d }) => isAddress(d.json.funder_address)).map(({ d }) => [`${lc(d.json.funder_address)}:${lc(d.json.token)}`, { token: lc(d.json.token), holder: lc(d.json.funder_address) }])).values()];
@@ -54,6 +59,26 @@ export async function scheduleF(ctx) {
         })
       );
     }
+  }
+  // A listing whose record did not answer keeps its clock, from the rail's own figures: "not read", never gone.
+  for (const { l, error } of missed) {
+    const e = l.economics ?? {};
+    const token = l.asset?.token;
+    const owedNow = formatAsset(parseAtomic(e.outstanding_awarded_atomic ?? e.currently_due_atomic) ?? 0n, token);
+    const states = Object.entries(l.award_states ?? {}).filter(([s, n]) => n > 0 && ["payable", "overdue_unpaid", "awarded"].includes(s)).map(([s, n]) => `${n} ${s}`).join(", ");
+    const why = /^(Failed to fetch|fetch failed|TypeError)/.test(error) ? "no answer this browser may read; the registry's rate limit arrives that way, HTTP 429 without CORS headers" : error;
+    lines.push(
+      line({
+        ref: `F-${l.listing_id}`,
+        schedule: "F",
+        state: STATE.UNREAD,
+        why: `not read: GET /api/listings/${l.listing_id}: ${why}`,
+        title: `listing ${l.listing_id} · awards not read`,
+        sentence: [`The rail says ${owedNow} is owed on listing ${l.listing_id}${states ? ` (${states})` : ""}. To whom and since when is not read on this visit: the listing's own record did not answer.`],
+        says: [{ label: "rail", value: `outstanding_awarded_atomic ${e.outstanding_awarded_atomic ?? "null"}, currently_due_atomic ${e.currently_due_atomic ?? "null"}, overdue_unpaid_atomic ${e.overdue_unpaid_atomic ?? "null"}, award_states ${JSON.stringify(l.award_states ?? {})}`, source: "GET /api/rail → listings[].economics", readAt: ctx.readAt }],
+        notVerified: ["which award is owed, to whom and since when: the listing's record was not read"],
+      })
+    );
   }
   if (ctx.l23?.firstLapse || ctx.l23?.close) {
     const L = ctx.l23;

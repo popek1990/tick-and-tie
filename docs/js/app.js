@@ -275,7 +275,7 @@ function viewLegend() {
     table(
       ["mark", "means"],
       [
-        [glyph(STATE.TIED), "tied: at least two nodes run by different operators agree with each other and with the claim, below the lower of their finalized heads (mainnet.base.org and Tenderly vote; dRPC is asked when one of them does not answer)"],
+        [glyph(STATE.TIED), "tied: at least two nodes run by different operators agree with each other and with the claim, below the lower of their finalized heads (mainnet.base.org and Tenderly vote; dRPC is asked when one of them does not answer). On A-log and D-2 the ✓ is a proof this browser checked, with no chain read, and their drawers say so"],
         [glyph(STATE.BROKEN), "a break: the sources agree with each other, and not with the claim (two nodes against a registry figure; or, in A-log, a proof against the witness's record)"],
         [glyph(STATE.BLIND), "not a reading: the registry's own figure is not a reading by its own published rule, so this page read the chain instead"],
         [glyph(STATE.UNREAD), "not read, always with the reason. ½ means read once, not tied; ≠ means the nodes disagree. It never means not there."],
@@ -372,6 +372,10 @@ function render() {
     if ((r.view === "today" && href === "#/") || (r.view === "schedule" && href === `#/${r.k.toLowerCase()}`) || href === location.hash) a.setAttribute("aria-current", "page");
     else a.removeAttribute("aria-current");
   }
+  // On a narrow screen the tabs scroll sideways; keep the current one in sight.
+  const cur = document.querySelector('nav.schedules a[aria-current="page"]');
+  const nav = cur?.parentElement;
+  if (cur && nav && nav.scrollWidth > nav.clientWidth) nav.scrollLeft = Math.max(0, cur.offsetLeft - (nav.clientWidth - cur.offsetWidth) / 2);
   if (r.view === "schedule" && r.sub) {
     const line = (results[r.k] ?? []).find((l) => l.route === location.hash);
     const d = $("drawer");

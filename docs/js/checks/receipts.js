@@ -84,6 +84,7 @@ export async function witnessLine(ctx) {
     ...base,
     state: ok ? STATE.TIED : STATE.BROKEN,
     mark: ok ? "✓" : "✗",
+    label: ok ? "checked in this browser, no chain read" : undefined,
     why: ok ? "the log served here extends the one the witness recorded, by a proof this browser checked" : "a step failed: the log served here does not provably extend the one the witness recorded (see THE SOCIETY'S LOG)",
     sealed: ok,
     sentence: [`The society's log served to this browser (tree ${groupInt(now.tree_size)}) ${ok ? "extends" : "does not provably extend"} the one GitHub's witness recorded at ${got.at ? isoMin(new Date(got.at)) : usedDay} (tree ${groupInt(w.tree_size)})${ok ? ": an RFC 6962 consistency proof verifies here. Every receipt below hangs off this log." : "."}`],

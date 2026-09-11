@@ -141,6 +141,7 @@ export async function scheduleD(ctx) {
       route: "#/d/2",
       state: unreadWhy ? STATE.UNREAD : root.ok ? STATE.TIED : STATE.BROKEN,
       mark: unreadWhy ? "?" : root.ok ? "✓" : "✗",
+      label: !unreadWhy && root.ok ? "checked in this browser, no chain read" : undefined,
       why: unreadWhy ?? (root.ok ? "every sealed row rehashes and links, the root folds, the registry key signed it" : "a step failed; see the steps"),
       title: "the sealed rows fold to the signed ledger root",
       sealed: root.ok,

@@ -18,7 +18,7 @@ export const MARK = Object.freeze({
 export const LABEL = Object.freeze({
   [STATE.TIED]: "tied at two nodes, behind finality",
   [STATE.BROKEN]: "the sources agree with each other, and not with the claim",
-  [STATE.BLIND]: "not a reading: the registry's figure is not a reading by its own rule",
+  [STATE.BLIND]: "the registry's own figure is not a reading, by its own rule",
   [STATE.UNREAD]: "not read (reason given)",
   [STATE.PENDING]: "on chain, not final yet",
   [STATE.NIL]: "nothing on chain to tie",
@@ -48,6 +48,7 @@ export function line(p) {
     route: p.route ?? `#/${p.schedule.toLowerCase()}/${p.ref.split("-").slice(1).join("-")}`,
     state: p.state,
     mark: p.mark ?? MARK[p.state],
+    label: p.label ?? LABEL[p.state], // a ✓ from a log or ledger check is not a two-node tie, and says so
     why: p.why ?? "",
     title: p.title ?? "",
     sentence: p.sentence ?? [],

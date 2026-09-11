@@ -8,6 +8,7 @@ import { matchRow, onchainCentsLine, PAYOUT_WALLET } from "../docs/js/checks/boo
 import { censusOf } from "../docs/js/checks/census.js";
 import { foldExhibits } from "../docs/js/checks/forgeries.js";
 import { firstWitnessed } from "../docs/js/checks/receipts.js";
+import { scheduleF } from "../docs/js/checks/clocks.js";
 import { linkHref, saysKind } from "../docs/js/ui.js";
 import { USDC, TOKEN, ranges } from "../docs/js/codec.js";
 
@@ -153,4 +154,17 @@ test("links: only validated parts become an href; everything else stays inert te
   for (const bad of ["//evil.example/api/x", "/api/../../x y", "/api/../admin", "https://1f916.ai/api/x", "/admin"]) assert.equal(linkHref("api", bad), null, bad);
   assert.equal(linkHref("nope", "#/a"), null);
   assert.equal(linkHref("route", 5), null);
+});
+
+test("a clock whose listing did not answer stays on the page as not read, from the rail's own figures", async () => {
+  const listing = (id, due) => ({ listing_id: id, asset: { chain_id: 8453, token: USDC }, award_states: { payable: 1 }, economics: { outstanding_awarded_atomic: due, currently_due_atomic: due, overdue_unpaid_atomic: "0" } });
+  const rail = { now: 1789000000000, listings: [listing(28, "100000"), { ...listing(29, "0"), award_states: { paid: 1 } }] };
+  const ctx = { docs: { rail }, readAt: "test", minFinal: 100, listingDetail: async () => ({ ok: false, status: 0, error: "Failed to fetch" }) };
+  const lines = await scheduleF(ctx);
+  assert.equal(lines.length, 1, "listing 29 owes nothing, so it has no clock");
+  const [l] = lines;
+  assert.equal(l.ref, "F-28");
+  assert.equal(l.state, STATE.UNREAD);
+  assert.match(l.sentence.join(""), /0\.10 USDC is owed on listing 28 \(1 payable\)/);
+  assert.match(l.why, /^not read: GET \/api\/listings\/28: .*HTTP 429 without CORS headers/);
 });

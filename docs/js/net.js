@@ -125,18 +125,21 @@ function lane(key, inflight, gapMs) {
   return lanes.get(key);
 }
 
+// Each request reserves its start before it waits, so two that wait at once still start gapMs apart (they once
+// left 3 ms apart and tenderly answered 429). A finished request hands its slot straight to the next in line.
 async function paced(key, inflight, gapMs, job) {
   const l = lane(key, inflight, gapMs);
   if (l.active >= l.inflight) await new Promise((res) => l.queue.push(res));
-  l.active++;
+  else l.active++;
+  const start = Math.max(Date.now(), l.last + l.gapMs);
+  l.last = start;
   try {
-    const wait = l.last + l.gapMs - Date.now();
-    if (wait > 0) await new Promise((res) => setTimeout(res, wait));
-    l.last = Date.now();
+    if (start > Date.now()) await new Promise((res) => setTimeout(res, start - Date.now()));
     return await job();
   } finally {
-    l.active--;
-    l.queue.shift()?.();
+    const next = l.queue.shift();
+    if (next) next();
+    else l.active--;
   }
 }
 
@@ -229,10 +232,12 @@ function parseJson(r) {
 
 // One listing or one binding costs the registry a second or more to build. On 2026-09-11 three at once were
 // refused, and so was the seventh in about ten seconds one at a time (HTTP 429, arriving without CORS headers,
-// so a browser can only call it a network error). Those paths go one at a time, two seconds apart, and the page
-// asks for as few as it can: receipts and funder bindings come from committed indexes the page re-checks.
+// so a browser can only call it a network error). Two seconds apart, a browser's fourth was refused on two loads
+// out of two, and a retry six seconds later too; three and a half seconds apart, none was. Those paths go one at
+// a time, 3.5 s apart, retry once after eleven, and the page asks for as few as it can: receipts and funder
+// bindings come from committed indexes the page re-checks, and a listing that stays unread says so.
 const HEAVY = /^\/api\/(listings|payout-bindings)\/\d+$/;
-const HEAVY_GAP_MS = 2000;
+const HEAVY_GAP_MS = 3500;
 
 /** GET from the registry. Returns {ok, json} or {ok:false, error}. Never throws for network trouble. */
 export async function registry(path) {
@@ -250,7 +255,7 @@ export async function registry(path) {
   let r = await once();
   // One retry, after a pause, on a network error, a 429 or a 5xx; never on another 4xx.
   if (!r.ok && (r.status === 0 || r.status === 429 || r.status >= 500) && !/budget/.test(r.error ?? "")) {
-    await new Promise((res) => setTimeout(res, heavy ? 6000 : 2500));
+    await new Promise((res) => setTimeout(res, heavy ? 11_000 : 2500));
     r = await once();
   }
   return parseJson(r);
