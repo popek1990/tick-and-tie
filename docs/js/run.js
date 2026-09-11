@@ -1,31 +1,31 @@
-// One reading of the rail, with no DOM: the registry wave (GET), the finalized head, the committed files, every
-// schedule in dependency order, the census, "today", and the negative controls. The page (app.js) draws it; the
-// command line (tools/tick.mjs) prints it. Same modules, same rules, same doors.
+// One reading of the rail, with no DOM: the registry's documents (GET), the finalized head, the committed files,
+// every schedule as soon as its own inputs land, the census, "today", and the negative controls. The page
+// (app.js) draws it; the command line (tools/tick.mjs) prints it. Same modules, same rules, same doors.
 
 import * as net from "./net.js";
 import { selfTest } from "./abi.js";
 import { heads, tieTransfer, STATE } from "./chain.js";
-import { verifyCheckpoint, verifyLedgerRoot, NotSupported } from "./crypto.js";
+import { verifyCheckpoint, verifyLedgerRoot, verifyConsistency, NotSupported } from "./crypto.js";
 import { scheduleA } from "./checks/receipts.js";
 import { scheduleC } from "./checks/observer.js";
 import { scheduleL } from "./checks/l23.js";
 import { scheduleF } from "./checks/clocks.js";
 import { scheduleG } from "./checks/forgeries.js";
 import { scheduleD, TREASURY, PAYOUT_WALLET } from "./checks/books.js";
-import { census } from "./checks/census.js";
-import { today } from "./checks/today.js";
+import { census, readCensusInputs } from "./checks/census.js";
+import { observerItem, todayItems } from "./checks/today.js";
 import { isoSec, fromMs, short, lc, isLookalike, TOKEN } from "./codec.js";
 
-export const LOCAL = Object.freeze({ baseline: "data/baseline.json", bindings: "data/bindings.json" });
+export const LOCAL = Object.freeze({ baseline: "data/baseline.json", bindings: "data/bindings.json", receipts: "data/receipts.json" });
 
 export function newRun() {
-  const ctx = { docs: {}, minFinal: null, headRef: null, baseline: null, bindingsIndex: null, readAt: null, registryKey: null };
+  const ctx = { docs: {}, minFinal: null, headRef: null, baseline: null, bindingsIndex: null, readAt: isoSec(new Date()), registryKey: null };
   const detailCache = new Map();
   ctx.listingDetail = (id) => {
     if (!detailCache.has(id)) detailCache.set(id, net.registry(`/api/listings/${id}`));
     return detailCache.get(id);
   };
-  return { ctx, results: { A: null, C: null, L: null, F: null, G: null, D: null, census: null, today: null, controls: null, Gnotes: [] }, problems: [] };
+  return { ctx, results: { A: null, C: null, L: null, F: null, G: null, D: null, census: null, today: null, todayPending: true, controls: null, Gnotes: [] }, problems: [] };
 }
 
 /**
@@ -38,45 +38,57 @@ export async function runAll(run, { loadLocal = (f) => net.local(f), status = ()
   const { ctx, results, problems } = run;
   const bad = selfTest();
   if (bad.length) problems.push(`keccak self-test failed for ${bad.join(", ")}: those calls are disabled`);
-  status("Reading the registry (GET) …");
-  const [rail, checkpoint, receiptEvents, treasury, official, listing23] = await Promise.all([
-    net.registry("/api/rail"),
-    net.registry("/api/checkpoint"),
-    net.registry("/api/events?kind=payout-receipt"),
-    net.registry("/treasury"),
-    net.registry("/api/official"),
-    ctx.listingDetail(23),
-  ]);
-  for (const [name, r] of Object.entries({ rail, checkpoint, receiptEvents, treasury, official, listing23 })) {
-    if (r.ok) ctx.docs[name] = r.json;
-    else problems.push(`GET ${name}: not read (${r.error})`);
-  }
-  ctx.readAt = isoSec(fromMs(rail.json?.now) ?? new Date());
-  ctx.docs.listing23Now = listing23.json?.now;
-  ctx.registryKey = checkpoint.json?.registry_public_key?.x ?? null;
-  const offTreasury = lc(official.json?.treasury?.address);
-  if (offTreasury && offTreasury !== TREASURY) problems.push(`the treasury address this page watches (${short(TREASURY)}) differs from GET /api/official (${short(offTreasury)}): check before trusting schedule D`);
+  const running = new Set(["the registry", "Base's finalized head"]);
+  const showRunning = () => status(running.size ? `Reading ${[...running].join(", ")} …` : "Finishing …");
+  showRunning();
 
-  status("Reading Base: the finalized head at three nodes …");
-  const h = await heads();
-  ctx.minFinal = h.minFinal;
-  ctx.heads = h;
-  ctx.headRef = h.per.base?.number ? h.per.base : h.per.drpc?.number ? h.per.drpc : null;
-  if (!ctx.minFinal) problems.push("no archive node answered the finalized head: chain lines below read as not read");
-  const [b, bi] = await Promise.all([LOCAL.baseline, LOCAL.bindings].map((f) => Promise.resolve(loadLocal(f)).catch((e) => ({ ok: false, error: String(e?.message ?? e) }))));
-  if (b.ok && b.json?.kind === "tick-and-tie.baseline.v1") ctx.baseline = b.json;
-  else problems.push(`${LOCAL.baseline}: not read (${b.error ?? "unexpected kind"})`);
-  if (bi.ok && bi.json?.kind === "tick-and-tie.bindings.v1") ctx.bindingsIndex = bi.json;
-  else problems.push(`${LOCAL.bindings}: not read (${bi.error ?? "unexpected kind"}); schedule C reads every listing live`);
-  onUpdate();
+  // Everything with no input starts at once; each door keeps its own pacing, so this changes the wall time, not
+  // the load on any server. /treasury is slow to build and only schedule D needs it, so nothing else waits for it.
+  const doc = (name, p) =>
+    p.then((r) => {
+      if (r.ok) ctx.docs[name] = r.json;
+      else problems.push(`GET ${name}: not read (${r.error})`);
+      return r;
+    });
+  const pRail = doc("rail", net.registry("/api/rail")).then((r) => {
+    if (r.ok) ctx.readAt = isoSec(fromMs(r.json?.now) ?? new Date());
+    running.delete("the registry");
+    showRunning();
+  });
+  const pCheckpoint = doc("checkpoint", net.registry("/api/checkpoint")).then((r) => (ctx.registryKey = r.json?.registry_public_key?.x ?? null));
+  const pEvents = doc("receiptEvents", net.registry("/api/events?kind=payout-receipt"));
+  const pL23 = doc("listing23", ctx.listingDetail(23)).then((r) => (ctx.docs.listing23Now = r.json?.now));
+  const pOfficial = doc("official", net.registry("/api/official")).then((r) => {
+    const offTreasury = lc(r.json?.treasury?.address);
+    if (offTreasury && offTreasury !== TREASURY) problems.push(`the treasury address this page watches (${short(TREASURY)}) differs from GET /api/official (${short(offTreasury)}): check before trusting schedule D`);
+  });
+  const pTreasury = doc("treasury", net.registry("/treasury"));
+  const pHeads = heads().then((h) => {
+    ctx.minFinal = h.minFinal;
+    ctx.heads = h;
+    ctx.headRef = ["base", "tenderly", "drpc"].map((id) => h.per[id]).find((v) => v?.number) ?? null;
+    if (!ctx.minFinal) problems.push("no archive node answered the finalized head: chain lines below read as not read");
+    running.delete("Base's finalized head");
+    showRunning();
+  });
+  const loaded = Promise.all([LOCAL.baseline, LOCAL.bindings, LOCAL.receipts].map((f) => Promise.resolve(loadLocal(f)).catch((e) => ({ ok: false, error: String(e?.message ?? e) }))));
+  const pLocal = loaded.then(([b, bi]) => {
+    if (b.ok && b.json?.kind === "tick-and-tie.baseline.v1") ctx.baseline = b.json;
+    else problems.push(`${LOCAL.baseline}: not read (${b.error ?? "unexpected kind"})`);
+    if (bi.ok && bi.json?.kind === "tick-and-tie.bindings.v1") ctx.bindingsIndex = bi.json;
+    else problems.push(`${LOCAL.bindings}: not read (${bi.error ?? "unexpected kind"}); schedule C reads every listing live`);
+  });
+  const pReceiptsIndex = loaded.then(([, , rc]) => {
+    if (rc.ok && rc.json?.kind === "tick-and-tie.receipts.v1") ctx.receiptsIndex = rc.json;
+    else problems.push(`${LOCAL.receipts}: not read (${rc.error ?? "unexpected kind"}); schedule A reads every receipt live`);
+  });
 
-  // The schedules run side by side where they do not depend on each other: each door has its own pacing, so
-  // this changes the wall time, not the load on any server. A comes before C (C needs A's receipts) and before
-  // G (G needs A's payees); L comes before F (F needs L's clocks).
-  const running = new Set();
-  const showRunning = () => status(running.size ? `Checking ${[...running].sort().join(", ")} …` : "Finishing …");
-  const step = async (key, fn) => {
-    running.add(key);
+  // "Today" is rebuilt whenever one of its inputs lands, so its first item shows in seconds, not at the end.
+  let observer = null;
+  const refreshToday = () => (results.today = todayItems(ctx, { observer, cLines: results.C, fLines: results.F, lLines: results.L }));
+  const step = async (key, deps, fn) => {
+    await Promise.all(deps);
+    running.add(`schedule ${key}`);
     showRunning();
     try {
       results[key] = await fn();
@@ -84,31 +96,39 @@ export async function runAll(run, { loadLocal = (f) => net.local(f), status = ()
       problems.push(`schedule ${key} stopped: ${e?.message ?? e}`);
       results[key] = [];
     }
-    running.delete(key);
+    running.delete(`schedule ${key}`);
     showRunning();
+    refreshToday();
     onUpdate();
   };
-  await step("L", async () => scheduleL(ctx));
-  const pA = step("A", () => scheduleA(ctx));
-  const pC = pA.then(() => step("C", () => scheduleC(ctx)));
-  const pF = step("F", () => scheduleF(ctx));
-  const pD = step("D", () => scheduleD(ctx));
-  const pG = pA.then(() => step("G", () => forgeries(run)));
-  await Promise.all([pC, pF]);
-  try {
-    results.today = await today(ctx, { cLines: results.C ?? [], fLines: results.F ?? [], lLines: results.L ?? [] });
-  } catch (e) {
-    problems.push(`today: ${e?.message ?? e}`);
-    results.today = [];
-  }
-  onUpdate();
-  try {
-    results.census = await census(ctx);
-  } catch (e) {
-    problems.push(`census stopped: ${e?.message ?? e}`);
-  }
-  onUpdate();
-  await Promise.all([pD, pG]);
+  // L before F (F reads L's clocks); A before C (C sets receipts apart) and before G (G watches A's payees).
+  const pL = step("L", [pRail, pL23], async () => scheduleL(ctx));
+  const pObserver = Promise.all([pRail, pHeads]).then(async () => {
+    try {
+      observer = await observerItem(ctx);
+    } catch (e) {
+      problems.push(`today: ${e?.message ?? e}`);
+    }
+    refreshToday();
+    onUpdate();
+  });
+  const pF = step("F", [pRail, pHeads, pL], () => scheduleF(ctx));
+  const pA = step("A", [pRail, pEvents, pCheckpoint, pHeads, pReceiptsIndex], () => scheduleA(ctx));
+  const pC = step("C", [pA, pLocal], () => scheduleC(ctx));
+  const pG = step("G", [pA, pL23], () => forgeries(run));
+  const pD = step("D", [pTreasury, pLocal, pHeads, pCheckpoint], () => scheduleD(ctx));
+  const pCensusIn = pRail.then(() => readCensusInputs());
+  const pCensus = Promise.all([pCensusIn, pC]).then(async ([inputs]) => {
+    try {
+      results.census = await census(ctx, inputs);
+    } catch (e) {
+      problems.push(`census stopped: ${e?.message ?? e}`);
+    }
+    onUpdate();
+  });
+  await Promise.all([pL, pObserver, pF, pA, pC, pG, pD, pCensus, pOfficial]);
+  results.todayPending = false;
+  refreshToday();
   results.controls = await controls(run);
   onUpdate();
   return run;
@@ -123,8 +143,8 @@ async function forgeries(run) {
     ...(ctx.docs.rail?.observer?.marks ?? []).filter((m) => ![TREASURY, PAYOUT_WALLET].includes(lc(m.funder_address))).map((m) => ({ address: lc(m.funder_address), label: `funder wallet ${short(m.funder_address)}` })),
   ];
   const payees = [];
-  for (const l of results.A ?? []) if (l.extra?.claim?.to) payees.push({ address: l.extra.claim.to, label: `${l.handles[0]}'s payout address` });
-  for (const bnd of ctx.docs.listing23?.bindings ?? []) payees.push({ address: bnd.payout_address, label: `${bnd.handle}'s route on listing 23` });
+  for (const l of results.A ?? []) if (l.extra?.claim?.to) payees.push({ address: l.extra.claim.to, label: `${l.handles[0]}'s payout address`, kind: "payee", handle: l.handles[0] });
+  for (const bnd of ctx.docs.listing23?.bindings ?? []) payees.push({ address: bnd.payout_address, label: `${bnd.handle}'s route on listing 23`, kind: "l23", handle: bnd.handle });
   const g = await scheduleG(ctx, wallets, payees);
   results.Gnotes = g.notes;
   return g.lines;
@@ -175,6 +195,12 @@ export async function controls(run) {
       add(`${a.ref} tie, amount + 1 atomic unit`, STATE.BROKEN, tieTransfer({ ...claim, value: claim.value + 1n }, ctx.samples.receipts, ctx.minFinal).state);
       add(`${a.ref} tie, wrong token`, STATE.BROKEN, tieTransfer({ ...claim, token: TOKEN }, ctx.samples.receipts, ctx.minFinal).state);
       add(`${a.ref} tie, log index + 1`, STATE.BROKEN, tieTransfer({ ...claim, logIndex: claim.logIndex + 1 }, ctx.samples.receipts, ctx.minFinal).state);
+    }
+    const cs = ctx.samples?.consistency;
+    if (cs && cs.proof.length) {
+      add(`witness consistency ${cs.first} → ${cs.second}, as served`, true, await verifyConsistency(cs.first, cs.second, cs.firstRoot, cs.secondRoot, cs.proof));
+      add("witness consistency, one proof hash changed", false, await verifyConsistency(cs.first, cs.second, cs.firstRoot, cs.secondRoot, [flipHex(cs.proof[0]), ...cs.proof.slice(1)]));
+      add("witness consistency, the witnessed root changed", false, await verifyConsistency(cs.first, cs.second, flipHex(cs.firstRoot), cs.secondRoot, cs.proof));
     }
     add("lookalike: a real poisoning pair", true, isLookalike("0x4B010DeaCd6aA30D6674b0624ad5aAD935B44D28", "0x4b086F5Df2a15394a3b2FD83Db90764F25134d28"));
     add("lookalike: an address against itself", false, isLookalike("0x4B010DeaCd6aA30D6674b0624ad5aAD935B44D28", "0x4b010deacd6aa30d6674b0624ad5aad935b44d28"));

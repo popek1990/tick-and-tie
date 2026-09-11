@@ -182,6 +182,22 @@ export function span(ms) {
 
 export const groupInt = (n) => group(String(n));
 
+/** "1 payment" / "3 payments". */
+export const plural = (n, word, many = word + "s") => `${groupInt(n)} ${n === 1 ? word : many}`;
+
+/** Integer ids as runs: [9, 11, 14, 15, 16, 17, 18] → "9, 11, 14–18". */
+export function ranges(ids) {
+  const sorted = [...new Set(ids.map(Number))].filter(Number.isInteger).sort((a, b) => a - b);
+  const out = [];
+  for (let i = 0; i < sorted.length; i++) {
+    let j = i;
+    while (j + 1 < sorted.length && sorted[j + 1] === sorted[j] + 1) j++;
+    out.push(j - i >= 2 ? `${sorted[i]}–${sorted[j]}` : j > i ? `${sorted[i]}, ${sorted[j]}` : String(sorted[i]));
+    i = j;
+  }
+  return out.join(", ");
+}
+
 // ---- untrusted text ----------------------------------------------------------------------------------------
 
 // Characters that change how text reads without being visible: format controls (bidi overrides, zero-width),

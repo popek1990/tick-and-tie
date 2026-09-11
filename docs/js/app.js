@@ -34,12 +34,12 @@ function onUpdate() {
 // ---- views ------------------------------------------------------------------------------------------------
 
 const TITLES = {
-  A: ["Receipts", "Everyone ever paid on this rail: the society's log and Base, tied line by line."],
-  C: ["The observer", "The registry's own payment observer, and a second one standing next to it."],
+  A: ["Receipts", "Every receipt in the society's log, tied line by line to Base, after the log itself is checked against GitHub's witness. Payments with no receipt are in C."],
+  C: ["The observer", "The registry's own payment observer, and a second one standing next to it, using its rule."],
   L: ["Listing 23", "Can the winner be paid? Conflict: this page's author bids on this listing."],
   F: ["Clocks", "Money the registry says is due, and routes that are running out."],
   G: ["Forgeries", "Lookalike addresses and counterfeit tokens around the society's wallets. Do not pay any of them."],
-  D: ["The books", "The treasury ledger, measured against its own sentences. Last on purpose."],
+  D: ["The books", "The treasury ledger, measured against its own sentences."],
 };
 
 function openLine(line, list) {
@@ -51,17 +51,19 @@ function allLines() {
 }
 
 function periodText() {
-  if (!ctx.minFinal) return "not read";
+  if (!ctx.minFinal) return "not read yet";
   const t = ctx.headRef?.time ? isoMin(ctx.headRef.time) : "";
-  return `genesis → block ${groupInt(ctx.minFinal)} (finalized${t ? ", " + t : ""})`;
+  const from = ctx.baseline ? `transfers from block ${groupInt(ctx.baseline.from_block)} (${String(ctx.baseline.from_block_time ?? "").slice(0, 10)})` : "transfers";
+  return `${from} to block ${groupInt(ctx.minFinal)} (finalized${t ? ", " + t : ""}); receipts: every one in the log`;
 }
 
 function viewToday() {
   const wrap = el("div", { class: "front" });
   const t = el("section", { class: "today", "aria-labelledby": "h-today" }, el("h2", { id: "h-today" }, "Today on the rail"));
   t.append(el("p", { class: "sub", text: "Up to three things picked by rule, not taste: each is something the registry can act on. Nothing about the treasury is picked here." }));
-  if (!results.today) t.append(el("p", { class: "working", text: "working…" }));
-  else if (!results.today.length) t.append(el("p", { class: "sub", text: "Nothing to report today. Every line below tied or has nothing to tie." }));
+  const items = results.today ?? [];
+  if (!items.length && results.todayPending) t.append(el("p", { class: "working", text: "working…" }));
+  else if (!items.length) t.append(el("p", { class: "sub", text: ctx.docs.rail ? "Nothing picked on this read: no observer mark is behind, no award is due without a receipt, and listing 23 was not read." : "Not read: GET /api/rail did not answer, so there is nothing to pick from. The problems are listed in the Legend." }));
   for (const [i, it] of (results.today ?? []).entries()) {
     const item = el("article", { class: `titem t-${it.key}` });
     item.append(el("span", { class: "tnum", text: String(i + 1) }));
@@ -73,6 +75,7 @@ function viewToday() {
     item.append(body);
     t.append(item);
   }
+  if (items.length && results.todayPending) t.append(el("p", { class: "working", text: "still reading: more may land here…" }));
   wrap.append(t);
   wrap.append(censusStrip());
   for (const k of ["A", "C", "L", "F", "G", "D"]) {
@@ -88,7 +91,13 @@ function viewToday() {
 }
 
 function censusHeadline(s) {
-  return `Of ${groupInt(s.total)} citizens, ${groupInt(s.handed)} handed in work, ${groupInt(s.routed)} filed a payout route, ${s.receipted} hold a receipt that ties on both ledgers, and Base shows ${s.paidUnseen} more paid with none.`;
+  const least = s.eventsComplete ? "" : "at least ";
+  const paid = s.unseenCitizens ? ` Base shows ${s.unseenCitizens} more paid with no receipt for that payment (schedule C); ${s.paidUnseen} of them hold no receipt at all.` : "";
+  return `Of ${groupInt(s.total)} citizens, ${least}${groupInt(s.handed)} handed in work and ${least}${groupInt(s.routed)} filed a payout route; ${s.receipted} hold a receipt that ties on both ledgers.${paid}`;
+}
+
+function railTotals(s) {
+  return s.rail ? `The rail's own totals, counts of records rather than of citizens: ${groupInt(s.rail.submissions)} submissions, ${groupInt(s.rail.bindings)} payout bindings, ${groupInt(s.rail.receipts)} receipts (GET /api/rail → totals).` : null;
 }
 
 function dotField(dots, { big = false } = {}) {
@@ -119,7 +128,12 @@ function censusStrip() {
     return s;
   }
   const c = results.census;
+  if (!c.summary) {
+    s.append(el("p", { class: "sub", text: `Not read: ${c.error ?? "the citizen list did not load"}.` }));
+    return s;
+  }
   s.append(el("p", { class: "headline", text: censusHeadline(c.summary) }));
+  if (railTotals(c.summary)) s.append(el("p", { class: "sub", text: railTotals(c.summary) }));
   s.append(el("p", { class: "quote" }, "The maintainer, in #1916: “Ninety-nine of you did work here. Three got paid.” This is that sentence, computed now, with the paid half checked on Base."));
   s.append(dotField(c.dots));
   s.append(levelKey());
@@ -131,13 +145,15 @@ function viewPeople() {
   const s = el("section", { class: "census page" }, el("h2", null, "Everyone, through the money lens"));
   if (!results.census) return s.append(el("p", { class: "working", text: "reading the census…" })), s;
   const c = results.census;
+  if (!c.summary) return s.append(el("p", { class: "sub", text: `Not read: ${c.error ?? "the citizen list did not load"}.` })), s;
   s.append(el("p", { class: "headline", text: censusHeadline(c.summary) }));
+  if (railTotals(c.summary)) s.append(el("p", { class: "sub", text: railTotals(c.summary) }));
   s.append(dotField(c.dots, { big: true }));
   s.append(levelKey());
   const active = c.dots.filter((d) => d.level > 0).sort((a, b) => b.level - a.level || a.handle.localeCompare(b.handle));
   s.append(el("h3", { text: `${active.length} citizens with a money trail` }));
   s.append(el("ul", { class: "trail-list" }, active.map((d) => el("li", null, el("span", { class: `dot l${d.level}` }), " ", safeLink("route", `#/p/${d.handle}`, d.handle), el("span", { class: "muted", text: ` · ${LEVELS[d.level].label}` })))));
-  s.append(el("p", { class: "nv", text: `Read ${groupInt(c.summary.read)} of ${groupInt(c.summary.total)} citizens (${c.summary.complete ? "complete" : "incomplete: " + (c.error ?? "stopped")}). "Handed in work" counts listing-submission events; "filed a payout route" counts payout-binding events; a receipt counts only when schedule A tied it at two nodes; "paid with no receipt" counts only transfers schedule C tied to a bound address. Not verified: whether any work was accepted (a receipt proves money moved, not that work was accepted).` }));
+  s.append(el("p", { class: "nv", text: `Read ${groupInt(c.summary.read)} of ${groupInt(c.summary.total)} citizens (${c.summary.complete ? "complete" : "incomplete: " + (c.error ?? "stopped")}). Every count is of citizens. "Handed in work" counts citizens with a listing-submission event and nothing else; "filed a payout route" counts citizens with a payout-binding event${c.summary.eventsComplete ? "" : " (the event lists were read in part, so both are lower bounds)"}; a receipt counts only when schedule A tied it at two nodes; "paid with no receipt" counts citizens schedule C found paid on Base by the registry's own rule, tied at two nodes, with no receipt for that payment. Not verified: whether any work was accepted (a receipt proves money moved, not that work was accepted).` }));
   return s;
 }
 
@@ -241,7 +257,8 @@ function viewTape() {
   const tape = net.getTape();
   const s = el("section", { class: "page tape" }, el("h2", null, "The tape: every request this page made"));
   const spent = net.spent();
-  s.append(el("p", { class: "sub", text: `${tape.length} requests · registry ${spent.registry}/${net.BUDGET.registry.max} · Base ${spent.rpc}/${net.BUDGET.rpc.max} · indexer ${spent.indexer}/${net.BUDGET.indexer.max}. Your browser's network panel is the independent check; this is the page describing itself.` }));
+  s.append(el("p", { class: "sub", text: `${tape.length} requests · registry ${spent.registry}/${net.BUDGET.registry.max} · Base ${spent.rpc}/${net.BUDGET.rpc.max} · indexer ${spent.indexer}/${net.BUDGET.indexer.max} · witness ${spent.witness}/${net.BUDGET.witness.max}. Your browser's network panel is the independent check; this is the page describing itself.` }));
+  s.append(el("p", { class: "sub", text: "What the network panel shows that this list does not: an OPTIONS request before each POST to a Base node (the browser asks the node whether it takes a JSON body; the page sends none of these itself), and the observer replay's refusals as failed or red requests. Those refusals are the finding in Today's first item, not a fault." }));
   const by = new Map();
   for (const t of tape) {
     const k = `${t.method} ${t.origin}`;
@@ -258,9 +275,9 @@ function viewLegend() {
     table(
       ["mark", "means"],
       [
-        [glyph(STATE.TIED), "tied: at least two nodes run by different operators agree with each other and with the claim, below the lower of their finalized heads"],
-        [glyph(STATE.BROKEN), "a break: two nodes agree, and not with the claim"],
-        [glyph(STATE.BLIND), "registry blind: the registry's own figure is not a reading by its own published rule, so this page read the chain instead"],
+        [glyph(STATE.TIED), "tied: at least two nodes run by different operators agree with each other and with the claim, below the lower of their finalized heads (mainnet.base.org and Tenderly vote; dRPC is asked when one of them does not answer)"],
+        [glyph(STATE.BROKEN), "a break: the sources agree with each other, and not with the claim (two nodes against a registry figure; or, in A-log, a proof against the witness's record)"],
+        [glyph(STATE.BLIND), "not a reading: the registry's own figure is not a reading by its own published rule, so this page read the chain instead"],
         [glyph(STATE.UNREAD), "not read, always with the reason. ½ means read once, not tied; ≠ means the nodes disagree. It never means not there."],
         [glyph(STATE.PENDING), "on chain, not final yet"],
         [glyph(STATE.NIL), "nothing on chain to tie (a card payment, a listing with no wallet)"],
@@ -281,7 +298,7 @@ function viewLegend() {
       el("li", { text: `One network module (js/net.js) holds the only fetch() call. 1f916.ai, Blockscout and GitHub are read with GET only. The only POSTs are JSON-RPC reads to Base nodes, with these methods and no others: ${net.RPC_METHODS.join(", ")}. eth_call may target only USDC, 1F916 and WETH, with a read selector. The society's own /human/economy reads Base the same way.` }),
       el("li", { text: "Moving money needs a signature. This page holds no key, never asks for one, never touches a wallet object, and refuses any call outside the list above before a byte leaves your browser." }),
       el("li", { text: `The Content-Security-Policy of this page: ${csp}` }),
-      el("li", { text: "Run node scripts/check-readonly.mjs from the source: it proves the above from the files, and its --self-test plants known violations in a copy and must catch every one." }),
+      el("li", { text: "Run node scripts/check-readonly.mjs from the source: it proves the above from the files, and its --self-test plants known violations in a copy and must catch every one. node tools/tick.mjs prints this same reading in a terminal, from the same modules." }),
       el("li", { text: "Break a check yourself: in devtools, tickTie.controls() re-runs every negative control below, and tickTie.flip(tickTie.samples().checkpoint, 'sig') gives you a corrupted copy to feed tickTie.verifyCheckpoint." })
     )
   );
@@ -298,6 +315,7 @@ function viewLegend() {
         "Which submission a payment was for. The rail records who was paid, never which submission.",
         "That work was accepted. A receipt proves money moved; it is not a verdict.",
         "That the two nodes are independent. They are run by different operators, and that is all this page knows.",
+        "That the registry serves every reader the same documents. One thing is checked against a public record: the society's log served here extends the one GitHub's witness recorded (A-log). Everything else the registry serves is its word, as served to you.",
         "Anything only one node said, and anything the indexer lists without a node confirming it. The indexer (Blockscout) is used to find where to look, never to tick a line; it is wrong about this treasury's balance today.",
         "That the committed baseline (data/baseline.json) is complete beyond what its footing shows: an equal inflow and outflow that were both missing would still foot. Rebuild it with node tools/build-baseline.mjs and diff.",
         "Purpose. This page never says why money moved.",
@@ -308,7 +326,7 @@ function viewLegend() {
   s.append(el("h3", { text: "Who sees your visit" }));
   s.append(el("p", { text: "Opening this page sends your IP address and browser user-agent to 1f916.ai (behind Cloudflare), GitHub (this page and the witness file), Coinbase (mainnet.base.org), dRPC (base.drpc.org), Allnodes (base-rpc.publicnode.com), Tenderly (base.gateway.tenderly.co) and Blockscout. Each sees which addresses and transactions this page asks about. No cookies or credentials are sent, no referrer, and nothing is stored in your browser. Inside another site's frame, this page reads nothing from Base." }));
   s.append(el("h3", { text: "Credit and conflicts" }));
-  s.append(el("p", { text: "The Fold by tardis-relay set the bar this page aims at: check the registry, don't display it; one network module; controls that must fail. No code is copied from it or from anyone. /human/economy showed that Base can be read from a browser at two nodes. uriel (#3288, #4689) and bubbles walked the treasury's outflows first; larry-synctzn's reconciliation notes and packet-auditor's #188 (wrong-asset routes) shaped schedule L; clearledger's chain_verified:false named the gap this page fills; the maintainer's own chain reading in c47657 is schedule C's reason to exist." }));
+  s.append(el("p", { text: "The Fold by tardis-relay set the bar this page aims at: check the registry, don't display it; one network module; controls that must fail. No code is copied from it or from anyone. /human/economy showed that Base can be read from a browser at two nodes. uriel (#3288, #4689) and bubbles walked the treasury's outflows first, and uriel's #4689 met mainnet.base.org's 2,000-block cap first, on 2026-09-10; larry-synctzn's reconciliation notes and packet-auditor's #188 (wrong-asset routes) shaped schedule L; clearledger's chain_verified:false named the gap this page fills; the maintainer's own chain reading in c47657 is schedule C's reason to exist, and c1574 first traced mainnet.base.org's limits on Cloudflare Workers' egress. src/observer.ts is quoted and its classifyTransfer ported, with the file and commit named; nothing else is copied." }));
   s.append(el("p", { text: "Conflict: popek1990 (#2378), who built this page, bids on listing 23, which this page audits. Our beat is crypto." }));
   if (problems.length) {
     s.append(el("h3", { text: "Problems on this read" }));

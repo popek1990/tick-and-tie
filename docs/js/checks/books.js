@@ -1,4 +1,4 @@
-// Schedule D · THE BOOKS: the treasury ledger, measured against its own sentences. Last on the page on purpose.
+// Schedule D · THE BOOKS: the treasury ledger, measured against its own sentences. Last on the page.
 //
 // Order, and why:
 //   D-1  docket row treasury-governance (a) asks that a third party can recompute, from public methods only, which
@@ -14,10 +14,10 @@
 // treasury key signed". The page does not read purpose, and it names no person. Credit: uriel (#3288, #4689)
 // and bubbles walked these outflows first, in posts.
 
-import { indexer } from "../net.js";
+import { indexerPages } from "../net.js";
 import { verifyLedgerRoot, NotSupported } from "../crypto.js";
 import { balancesAt, tieBalance, agreedValue, receiptsAt, readTransfer, decide, STATE } from "../chain.js";
-import { centsToUsdcAtomic, formatAsset, lc, short, isoMin, parseAtomic, groupInt, decodeTransfer, USDC, TOKEN, WETH, ASSETS } from "../codec.js";
+import { centsToUsdcAtomic, formatAsset, lc, short, isoMin, isoSec, fromMs, parseAtomic, groupInt, decodeTransfer, USDC, TOKEN, WETH, ASSETS } from "../codec.js";
 import { blockTime } from "./observer.js";
 import { topicOf } from "../keccak.js";
 import { line } from "../lines.js";
@@ -55,6 +55,43 @@ export function mechanism(receipt, outflow) {
   const auth = logs.find((l) => lc(l.address) === USDC && lc(l.topics?.[0]) === AUTHORIZATION_USED && lc(l.topics?.[1]).endsWith(TREASURY.slice(2)));
   if (auth) return `authorized off-chain by the treasury key (EIP-3009) and submitted by ${short(sender)}`;
   return `moved in a transaction ${short(sender)} sent; mechanism not read`;
+}
+
+/**
+ * D-3 · onchain_cents against the wallet. When the registry's own read of the wallet fails it serves
+ * onchain_cents: null and says so in assets.errors ("USDC balanceOf did not answer"). A null is not a zero, and a
+ * figure the books mark stale is not a reading of now: either one is compared with nothing, and the line says the
+ * registry could not read (◐). A difference is reported (?), never called a break: the books do not say which block
+ * they read, and a transfer between their read and ours would part the two honestly.
+ */
+export function onchainCentsLine(t, perNode, readAt = null) {
+  const now = agreedValue(perNode);
+  const usdcErr = (Array.isArray(t.assets?.errors) ? t.assets.errors : []).find((e) => /USDC/.test(String(e))) ?? null;
+  const centsKnown = t.onchain_cents !== null && t.onchain_cents !== undefined && Number.isSafeInteger(Number(t.onchain_cents)) && t.onchain_checked_at != null;
+  const checked = fromMs(Number(t.onchain_checked_at));
+  const says = [{ label: "books", value: `onchain_cents ${t.onchain_cents}, onchain_is_stale ${t.onchain_is_stale}, checked ${checked ? isoSec(checked) : String(t.onchain_checked_at)}${usdcErr ? `; assets.errors: “${usdcErr}”` : ""}`, source: "GET /treasury", readAt }];
+  const shows = Object.entries(perNode).map(([node, v]) => ({ node, text: v.notRead ?? `balanceOf = ${v.value} (${formatAsset(v.value, USDC)})` }));
+  const base = { ref: "D-3", schedule: "D", route: "#/d/3", title: "onchain_cents against the wallet", says, shows };
+  if (!centsKnown || usdcErr || t.onchain_is_stale === true) {
+    return line({
+      ...base,
+      state: STATE.BLIND,
+      why: !centsKnown ? "the books carry no reading of the wallet on this request (onchain_cents is null)" : usdcErr ? "the books say their own USDC read failed on this request" : "the books mark their own figure stale",
+      sentence: [`The books could not read their own wallet on this request${usdcErr ? ` (they say: “${usdcErr}”)` : ""}, so there is no figure to tie${centsKnown ? ` (onchain_cents ${groupInt(Number(t.onchain_cents))}${t.onchain_is_stale ? ", marked stale" : ""})` : ""}. This page read the wallet at two nodes: ${now !== null ? formatAsset(now, USDC) : "not read"} (D-1).`],
+      notVerified: ["why the registry's read failed: it does not say beyond the error it prints"],
+    });
+  }
+  const cents = Number(t.onchain_cents);
+  let d3 = tieBalance(perNode, centsToUsdcAtomic(cents), { tolerance: 9999n });
+  if (d3.state === STATE.BROKEN) d3 = { state: STATE.UNREAD, mark: "?", why: "the books and the wallet differ beyond a cent; the books do not say which block they read, so a transfer between the two reads could explain it" };
+  return line({
+    ...base,
+    state: d3.state,
+    mark: d3.mark,
+    why: d3.why,
+    sentence: [`The books' onchain_cents reads ${groupInt(cents)} (${(cents / 100).toFixed(2)} USDC); the wallet holds ${now !== null ? formatAsset(now, USDC) : "not read"}. The books round to cents.`],
+    notVerified: ["which block the registry read: it does not say, so a transfer between its read and ours can move the numbers apart"],
+  });
 }
 
 export async function scheduleD(ctx) {
@@ -119,47 +156,8 @@ export async function scheduleD(ctx) {
     })
   );
 
-  // D-3 onchain_cents. When the registry's own read of the wallet fails it serves onchain_cents: null and says so
-  // in assets.errors ("USDC balanceOf did not answer"). A null is not a zero, and a figure the books mark stale is
-  // not a reading of now: either one is compared with nothing, and the line says the registry could not read.
-  const usdcErr = (Array.isArray(t.assets?.errors) ? t.assets.errors : []).find((e) => /USDC/.test(String(e))) ?? null;
-  const centsKnown = t.onchain_cents !== null && t.onchain_cents !== undefined && Number.isSafeInteger(Number(t.onchain_cents)) && t.onchain_checked_at != null;
-  const says3 = [{ label: "books", value: `onchain_cents ${t.onchain_cents}, onchain_is_stale ${t.onchain_is_stale}, checked ${t.onchain_checked_at}${usdcErr ? `; assets.errors: “${usdcErr}”` : ""}`, source: "GET /treasury", readAt }];
-  if (!centsKnown || usdcErr || t.onchain_is_stale === true) {
-    lines.push(
-      line({
-        ref: "D-3",
-        schedule: "D",
-        route: "#/d/3",
-        state: STATE.BLIND,
-        why: !centsKnown ? "the books carry no reading of the wallet on this request (onchain_cents is null)" : usdcErr ? "the books say their own USDC read failed on this request" : "the books mark their own figure stale",
-        title: "onchain_cents against the wallet",
-        sentence: [`The books could not read their own wallet on this request${usdcErr ? ` (they say: “${usdcErr}”)` : ""}, so there is no figure to tie${centsKnown ? ` (onchain_cents ${groupInt(Number(t.onchain_cents))}${t.onchain_is_stale ? ", marked stale" : ""})` : ""}. This page read the wallet at two nodes: ${now !== null ? formatAsset(now, USDC) : "not read"} (D-1).`],
-        says: says3,
-        notVerified: ["why the registry's read failed: it does not say beyond the error it prints"],
-      })
-    );
-  } else {
-    const cents = Number(t.onchain_cents);
-    let d3 = tieBalance(usdcNow.perNode, centsToUsdcAtomic(cents), { tolerance: 9999n });
-    // The books do not say which block they read, and this page reads behind finality: a transfer between the two
-    // reads would part them honestly. So a difference here is reported, never called a break.
-    if (d3.state === STATE.BROKEN) d3 = { state: STATE.UNREAD, mark: "?", why: "the books and the wallet differ beyond a cent; the books do not say which block they read, so a transfer between the two reads could explain it" };
-    lines.push(
-      line({
-        ref: "D-3",
-        schedule: "D",
-        route: "#/d/3",
-        state: d3.state,
-        mark: d3.mark,
-        why: d3.why,
-        title: "onchain_cents against the wallet",
-        sentence: [`The books' onchain_cents reads ${groupInt(cents)} (${(cents / 100).toFixed(2)} USDC); the wallet holds ${now !== null ? formatAsset(now, USDC) : "not read"}. The books round to cents.`],
-        says: says3,
-        notVerified: ["which block the registry read: it does not say, so a transfer between its read and ours can move the numbers apart"],
-      })
-    );
-  }
+  // D-3 onchain_cents (onchainCentsLine below, pure so the tests can feed it a null).
+  lines.push(onchainCentsLine(t, usdcNow.perNode, readAt));
   if (Array.isArray(t.assets?.errors) && t.assets.errors.length) {
     lines.push(
       line({
@@ -188,27 +186,21 @@ export async function scheduleD(ctx) {
   let liveOut = 0n;
   let liveOk = false;
   if (base && ctx.minFinal > base.to_block) {
-    const r = await indexer(`/api/v2/addresses/${TREASURY}/token-transfers?type=ERC-20`);
-    if (r.ok) {
-      let reachedBaseline = false;
-      for (const it of r.json.items ?? []) {
-        const block = Number(it.block_number ?? 0);
-        const token = lc(it.token?.address_hash ?? it.token?.address);
-        if (block <= base.to_block) {
-          reachedBaseline = true;
-          continue;
-        }
-        if (block > ctx.minFinal || token !== USDC) continue;
-        const v = parseAtomic(it.total?.value) ?? 0n;
-        if (lc(it.to?.hash) === TREASURY) liveIn += v;
-        if (lc(it.from?.hash) === TREASURY) {
-          liveOut += v;
-          if (v > 0n) outflows.push({ tx: lc(it.transaction_hash), logIndex: Number(it.log_index), token, to: lc(it.to?.hash), value: v, block, source: "indexer hint" });
-        }
+    const r = await indexerPages(`/api/v2/addresses/${TREASURY}/token-transfers?type=ERC-20`, base.to_block, 3);
+    for (const it of r.items) {
+      const block = Number(it.block_number ?? 0);
+      const token = lc(it.token?.address_hash ?? it.token?.address);
+      if (block <= base.to_block || block > ctx.minFinal || token !== USDC) continue;
+      const v = parseAtomic(it.total?.value) ?? 0n;
+      if (lc(it.to?.hash) === TREASURY) liveIn += v;
+      if (lc(it.from?.hash) === TREASURY) {
+        liveOut += v;
+        if (v > 0n) outflows.push({ tx: lc(it.transaction_hash), logIndex: Number(it.log_index), token, to: lc(it.to?.hash), value: v, block, source: "indexer hint" });
       }
-      liveOk = reachedBaseline || !r.json.next_page_params;
-      if (!liveOk) liveNotes.push("the indexer's newest page did not reach back to the baseline; older live flows were not listed");
-    } else liveNotes.push(`the live stretch after block ${base.to_block}: not read (${r.error})`);
+    }
+    liveOk = r.ok && r.complete;
+    if (!r.ok) liveNotes.push(`the live stretch after block ${groupInt(base.to_block)}: not read (${r.error})`);
+    else if (!r.complete) liveNotes.push(`the indexer's list did not reach back to the baseline (${r.error}); older live flows were not listed`);
   }
   const receipts = outflows.length ? await receiptsAt(outflows.map((o) => o.tx)) : {};
   const entries = t.entries ?? [];
@@ -241,8 +233,9 @@ export async function scheduleD(ctx) {
       sentence: [`${items.length} out · ${named.length} named by a row · ${conversions.length} conversion${conversions.length === 1 ? "" : "s"} · ${unnamed.length} named by no row.`],
       says: [
         { label: "the books' rule", value: "Spent only when earned dollars are exhausted, with the same public ledger line as everything else.", source: "GET /treasury → spending_policy.waterfall[1].rule", readAt },
-        { label: "window", value: base ? `from block ${groupInt(base.from_block)} (${base.from_block_time}) to ${groupInt(ctx.minFinal)}` : "baseline not loaded", source: "data/baseline.json + live" },
+        { label: "window", value: base ? `from block ${groupInt(base.from_block)} (${base.from_block_time}) to ${groupInt(ctx.minFinal)}` : "baseline not loaded", source: "data/baseline.json + live", kind: "file" },
       ],
+      shows: items.map((i) => ({ node: `${i.tie.mark} block ${groupInt(i.block)}`, text: `${formatAsset(i.value, i.token) ?? String(i.value)} → ${short(i.to)} · ${i.match ? `row ${i.match.row.id}` : i.conversion ? "a conversion" : "no row names it"} · ${i.tie.why}` })),
       extra: { items, named, conversions, unnamed },
       notVerified: ["purpose: this page does not read purpose", "who holds the treasury key: not read here", "anything outside USDC, 1F916 and WETH transfers: native ETH and other tokens are not listed", ...liveNotes],
       cite: `D-4 treasury outflows ${items.length} · named by a row ${named.length} · conversions ${conversions.length} · named by no row ${unnamed.length} · through block ${ctx.minFinal}`,
@@ -290,7 +283,7 @@ export async function scheduleD(ctx) {
           ...Object.entries(atStart.perNode).map(([node, v]) => ({ node: `${node} @${base.from_block}`, text: v.notRead ?? String(v.value) })),
           ...Object.entries(atEnd.perNode).map(([node, v]) => ({ node: `${node} @${base.to_block}`, text: v.notRead ?? String(v.value) })),
         ],
-        says: [{ label: "baseline", value: `${base.logs.length} logs, built ${base.built_at}, blocks ${base.from_block}–${base.to_block}, ${base.method}`, source: "data/baseline.json (rebuild: node tools/build-baseline.mjs)" }],
+        says: [{ label: "baseline", value: `${base.logs.length} logs, built ${base.built_at}, blocks ${base.from_block}–${base.to_block}, ${base.method}`, source: "data/baseline.json (rebuild: node tools/build-baseline.mjs)", kind: "file" }],
         notVerified: [...(base.limits ?? []), ...liveNotes],
       })
     );

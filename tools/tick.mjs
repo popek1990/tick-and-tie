@@ -65,9 +65,11 @@ if (json) {
   }
   if (results.census?.summary) {
     const s = results.census.summary;
+    const least = s.eventsComplete ? "" : "at least ";
     w();
-    w(`EVERYONE: of ${s.total} citizens, ${s.handed} handed in work, ${s.routed} filed a payout route, ${s.receipted} hold a receipt that ties on both ledgers, and Base shows ${s.paidUnseen} more paid with none.`);
-  }
+    w(`EVERYONE: of ${s.total} citizens, ${least}${s.handed} handed in work and ${least}${s.routed} filed a payout route; ${s.receipted} hold a receipt that ties on both ledgers.${s.unseenCitizens ? ` Base shows ${s.unseenCitizens} more paid with no receipt for that payment; ${s.paidUnseen} of them hold no receipt at all.` : ""}`);
+    if (s.rail) w(`  the rail's own totals (records, not citizens): ${s.rail.submissions} submissions, ${s.rail.bindings} bindings, ${s.rail.receipts} receipts`);
+  } else if (results.census?.error) w(`\nEVERYONE: not read (${results.census.error})`);
   for (const [k, title] of ORDER) {
     const lines = results[k] ?? [];
     const f = footing(lines);

@@ -3,10 +3,13 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { decide, tieBalance, agreedValue, STATE } from "../docs/js/chain.js";
-import { matchToBindings, nextObserverCall } from "../docs/js/checks/observer.js";
-import { matchRow, PAYOUT_WALLET } from "../docs/js/checks/books.js";
-import { linkHref } from "../docs/js/ui.js";
-import { USDC, TOKEN } from "../docs/js/codec.js";
+import { classifyTransfer, nextObserverCall, catchUp, cycleMinutesOf } from "../docs/js/checks/observer.js";
+import { matchRow, onchainCentsLine, PAYOUT_WALLET } from "../docs/js/checks/books.js";
+import { censusOf } from "../docs/js/checks/census.js";
+import { foldExhibits } from "../docs/js/checks/forgeries.js";
+import { firstWitnessed } from "../docs/js/checks/receipts.js";
+import { linkHref, saysKind } from "../docs/js/ui.js";
+import { USDC, TOKEN, ranges } from "../docs/js/codec.js";
 
 const bal = (v) => ({ value: v });
 const rule = (claim) => ({ same: (a, b) => a.value === b.value, matchesClaim: (v) => v.value === claim, blockOf: (v) => v.block ?? null, minFinal: 100 });
@@ -31,17 +34,87 @@ test("balances: tolerance for cents, and an agreed value only from two agreeing 
   assert.equal(agreedValue({ base: bal(1n), drpc: { notRead: "x" } }), null);
 });
 
-test("the registry's matching rule: unique listing credits it; the same pair on two listings is citizen only", () => {
-  const b = (listing_id, addr, amount, token = USDC, handle = "h") => ({ listing_id, payout_address: addr, amount_atomic: String(amount), token, handle });
+test("classifyTransfer, as src/observer.ts: every real transfer to a bound address is a payment", () => {
+  let id = 0;
+  const b = (listing_id, addr, amount, token = USDC, handle = "h") => ({ id: ++id, listing_id, payout_address: addr, amount_atomic: String(amount), token, handle, created_at: 1 });
   const A = "0x" + "a".repeat(40);
   const B = "0x" + "b".repeat(40);
   const t = { to: A, token: USDC, value: 100_000n };
-  assert.deepEqual(matchToBindings(t, [b(24, A, 100000)]).rule, "creditable");
-  assert.equal(matchToBindings(t, [b(24, A, 100000)]).listing, 24);
-  assert.equal(matchToBindings(t, [b(24, A, 100000), b(25, A, 100000)]).rule, "citizen-only");
-  assert.equal(matchToBindings(t, [b(24, A, 250000)]).rule, "bound-other-amount");
-  assert.equal(matchToBindings(t, [b(24, A, 100000, TOKEN)]).rule, "bound-other-amount", "same address and amount, another asset: not a match");
-  assert.equal(matchToBindings(t, [b(24, B, 100000)]).rule, "bound-nowhere");
+  const one = classifyTransfer(t, [b(24, A, 100000)]);
+  assert.equal(one.kind, "payment");
+  assert.equal(one.listing, 24, "exactly one listing matches address, amount and asset: it is credited");
+  const two = classifyTransfer(t, [b(24, A, 100000, USDC, "first"), b(25, A, 100000, USDC, "second")]);
+  assert.deepEqual([two.kind, two.listing, two.citizenOnly, two.handle], ["payment", null, true, "first"], "the same on two listings: the citizen only, named by the earliest binding");
+  const other = classifyTransfer(t, [b(24, A, 250000)]);
+  assert.deepEqual([other.kind, other.citizenOnly], ["payment", true], "another amount is still a payment, against the citizen only");
+  assert.deepEqual([classifyTransfer(t, [b(24, A, 100000, TOKEN)]).kind, classifyTransfer(t, [b(24, A, 100000, TOKEN)]).citizenOnly], ["payment", true], "another asset: the citizen only");
+  assert.equal(classifyTransfer(t, [b(24, B, 100000)]).kind, "other", "no binding at the address");
+  assert.equal(classifyTransfer({ ...t, value: 0n }, [b(24, A, 100000)]).kind, "zero_value", "zero value is the poisoning pattern wherever it goes");
+  assert.equal(classifyTransfer({ to: A.toUpperCase().replace("0X", "0x"), token: USDC.toUpperCase().replace("0X", "0x"), value: 100_000n }, [b(24, A, 100000)]).listing, 24, "case does not matter");
+});
+
+test("catching up: arithmetic on the walk_note, with the chain growing meanwhile", () => {
+  assert.equal(cycleMinutesOf("One funder wallet per five-minute cycle, at most 10,000 Base blocks per cycle"), 5);
+  assert.equal(cycleMinutesOf("something else"), null);
+  const fast = catchUp(940_000, 4, 5, 10_000);
+  assert.equal(fast.perTurn, 600, "4 wallets × 5 min × 60 s / 2 s");
+  assert.equal(fast.cycles, 100, "940,000 / (10,000 − 600)");
+  assert.equal(fast.hours, (100 * 20) / 60);
+  assert.equal(catchUp(940_000, 4, 5, 2_000).cycles, Math.ceil(940_000 / 1_400));
+  assert.equal(catchUp(940_000, 4, 5, 500).cycles, Infinity, "a range below the chain's growth never catches up");
+  assert.equal(catchUp(0, 4, 5, 10_000), null);
+  assert.equal(ranges([18, 9, 11, 14, 15, 16, 17, 24, 25]), "9, 11, 14–18, 24, 25");
+});
+
+test("the census counts citizens, each from one source", () => {
+  const citizens = ["a", "b", "c", "d"].map((h, i) => ({ handle: h, citizen_id: i + 1, created_at: i }));
+  const c = censusOf({
+    citizens,
+    submissions: [{ citizen: "a" }, { citizen: "a" }, { citizen: "b" }],
+    bindings: [{ citizen: "b" }, { citizen: "c" }], // c filed a route without handing in work (a verifier)
+    observerPayments: [{ handle: "c" }, { handle: "d" }],
+    receiptLines: [{ state: STATE.TIED, handles: ["d"] }],
+  });
+  assert.equal(c.counts.handed, 2, "only citizens with a submission event, not those who only filed a route");
+  assert.equal(c.counts.routed, 2);
+  assert.equal(c.counts.unseenCitizens, 2);
+  assert.equal(c.counts.paidUnseen, 1, "d holds a receipt, so only c is paid with no receipt at all");
+  assert.equal(c.counts.receipted, 1);
+});
+
+test("D-3: a null onchain_cents is not a reading, never a zero and never a break", () => {
+  const per = { base: { value: 28_810_931_619n }, tenderly: { value: 28_810_931_619n } };
+  const nul = onchainCentsLine({ onchain_cents: null, onchain_checked_at: null, assets: { errors: ["USDC balanceOf did not answer"] } }, per);
+  assert.equal(nul.state, STATE.BLIND);
+  assert.equal(nul.shows.length, 2, "the per-node reads are in the drawer");
+  const off = onchainCentsLine({ onchain_cents: 100, onchain_checked_at: 1789157675995, onchain_is_stale: false, assets: { errors: [] } }, per);
+  assert.equal(off.state, STATE.UNREAD, "a difference is reported, never called a break");
+  assert.match(off.says[0].value, /checked 2026-09-11 \d\d:\d\d:\d\dZ/, "an ISO time, not milliseconds");
+  assert.equal(onchainCentsLine({ onchain_cents: 2_881_093, onchain_checked_at: 1789157675995, onchain_is_stale: false, assets: { errors: [] } }, per).state, STATE.TIED);
+});
+
+test("G folds into campaigns: listing 23's lookalikes first, then one line per imitated token", () => {
+  const m = (fake, kind = "wallet") => ({ real: "0x" + "1".repeat(40), fake, label: kind === "l23" ? "x's route on listing 23" : "the treasury", kind, handle: kind === "l23" ? "x" : null, prefix: 4, suffix: 4 });
+  const ex = [
+    { kind: "counterfeit", pretends: "USDC", token: "0x" + "c".repeat(40), symbol: "ÚSDС", mimic: m("0x" + "2".repeat(40)) },
+    { kind: "counterfeit", pretends: "USDC", token: "0x" + "d".repeat(40), symbol: "USDC", mimic: m("0x" + "3".repeat(40)) },
+    { kind: "zero-value", token: USDC, symbol: "USDC", mimic: m("0x" + "2".repeat(40)) },
+    { kind: "zero-value", token: USDC, symbol: "USDC", mimic: m("0x" + "4".repeat(40), "l23") },
+  ];
+  const g = foldExhibits(ex);
+  assert.deepEqual(g.map((x) => x.key), ["l23", "fake-USDC", "zero"]);
+  assert.equal(g.reduce((n, x) => n + x.items.length, 0), ex.length, "each exhibit is counted in one line");
+});
+
+test("the witness file: its first identity_events checkpoint; each drawer row names its speaker", () => {
+  const text = ['{"at":"2026-09-11T00:00:35Z","checkpoints":[{"log":"identity_events","tree_size":11133,"root":"' + "a".repeat(64) + '","sig":"x","created_at":1}]}', '{"type":"witness-countersignature"}'].join("\n");
+  assert.equal(firstWitnessed(text).cp.tree_size, 11133);
+  assert.equal(firstWitnessed(text).at, "2026-09-11T00:00:35Z");
+  assert.equal(firstWitnessed("not json\n{}"), null);
+  assert.equal(saysKind({ source: "GET /api/rail" }), "registry");
+  assert.equal(saysKind({ source: "GET base.blockscout.com /api/v2/addresses/0x…" }), "indexer");
+  assert.equal(saysKind({ source: "data/baseline.json + live" }), "file");
+  assert.equal(saysKind({ source: "GET raw.githubusercontent.com/1f916-ai/1f916/main/witness/2026-09-11.jsonl" }), "witness");
 });
 
 test("the observer's next question is exactly its own: 10,000 blocks from last_block + 1, capped at finality", () => {

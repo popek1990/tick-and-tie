@@ -8,7 +8,7 @@
 // One answer is ½ (read once, not tied). Disagreement is ≠. Both count as not read. A throttle, an error or a
 // null is "not read", never zero and never "not there".
 
-import { NODES, rpc } from "./net.js";
+import { NODES, TIE_NODES, FALLBACK_NODE, rpc } from "./net.js";
 import { balanceOfData } from "./abi.js";
 import { decodeTransfer, parseQuantity, parseWord, lc } from "./codec.js";
 
@@ -42,7 +42,7 @@ export async function batchAt(nodeId, calls) {
  * The finalized head at each node that answers. Every tie below is pinned to min(finalized), so a node that is
  * behind cannot make a younger block look final.
  */
-export async function heads(nodeIds = ["base", "drpc", "publicnode"]) {
+export async function heads(nodeIds = ["base", "tenderly", "drpc", "publicnode"]) {
   const per = {};
   await Promise.all(
     nodeIds.map(async (id) => {
@@ -84,16 +84,32 @@ export function decide(perNode, { same, matchesClaim, blockOf, minFinal }) {
 
 // ---- receipts ---------------------------------------------------------------------------------------------
 
-/** Fetch receipts for many tx hashes at each archive node, batched. Returns {node: {tx: answer}}. */
-export async function receiptsAt(txs, nodeIds = ["base", "drpc"]) {
+// A receipt a node gave once is not asked for again during this reading: schedules A, C and D often name the same
+// transaction. Only answers are kept; a "not read" is asked again next time.
+const receiptCache = new Map();
+
+async function receiptsFrom(id, txs) {
+  const fresh = {};
+  const need = txs.filter((tx) => !receiptCache.has(`${id}:${tx}`));
+  if (need.length) {
+    const answers = await batchAt(id, need.map((tx) => ({ method: "eth_getTransactionReceipt", params: [tx] })));
+    need.forEach((tx, i) => (answers[i]?.notRead ? (fresh[tx] = answers[i]) : receiptCache.set(`${id}:${tx}`, answers[i])));
+  }
+  return Object.fromEntries(txs.map((tx) => [tx, receiptCache.get(`${id}:${tx}`) ?? fresh[tx]]));
+}
+
+/**
+ * Receipts for many tx hashes, batched: at the two tie nodes, then at the third node for any transaction one of
+ * them did not answer, so a single throttle does not turn a line into "read once". Returns {node: {tx: answer}};
+ * the third node appears only for the transactions it was asked about.
+ */
+export async function receiptsAt(txs, nodeIds = TIE_NODES, fallback = FALLBACK_NODE) {
   const uniq = [...new Set(txs.map(lc))];
   const per = {};
-  await Promise.all(
-    nodeIds.map(async (id) => {
-      const answers = await batchAt(id, uniq.map((tx) => ({ method: "eth_getTransactionReceipt", params: [tx] })));
-      per[id] = Object.fromEntries(uniq.map((tx, i) => [tx, answers[i]]));
-    })
-  );
+  await Promise.all(nodeIds.map(async (id) => (per[id] = await receiptsFrom(id, uniq))));
+  const answered = (tx) => nodeIds.filter((id) => per[id][tx] && !per[id][tx].notRead).length;
+  const missing = fallback && !nodeIds.includes(fallback) ? uniq.filter((tx) => answered(tx) < 2) : [];
+  if (missing.length) per[fallback] = await receiptsFrom(fallback, missing);
   return per;
 }
 
@@ -128,7 +144,8 @@ const sameTransfer = (a, b) =>
  */
 export function tieTransfer(claim, receiptsByNode, minFinal) {
   const perNode = {};
-  for (const [id, byTx] of Object.entries(receiptsByNode)) perNode[id] = readTransfer(byTx[lc(claim.tx)], claim.logIndex);
+  const tx = lc(claim.tx);
+  for (const [id, byTx] of Object.entries(receiptsByNode)) if (byTx && Object.hasOwn(byTx, tx)) perNode[id] = readTransfer(byTx[tx], claim.logIndex);
   const verdict = decide(perNode, {
     same: sameTransfer,
     blockOf: (v) => v.block,
@@ -146,22 +163,22 @@ export function tieTransfer(claim, receiptsByNode, minFinal) {
 // ---- balances ---------------------------------------------------------------------------------------------
 
 /**
- * balanceOf for many (token, holder) pairs at one block, at each node. publicnode only serves recent state, so it
- * is asked only when the block is "finalized"-recent; old blocks go to the archive pair.
+ * balanceOf for many (token, holder) pairs at one block, at the two tie nodes (both archive), then at the third
+ * node for any pair one of them did not answer. publicnode serves recent state only, so it is never asked here.
  */
-export async function balancesAt(pairs, blockNumber, nodeIds = ["base", "drpc"]) {
+export async function balancesAt(pairs, blockNumber, nodeIds = TIE_NODES, fallback = FALLBACK_NODE) {
+  if (!Number.isInteger(blockNumber)) return pairs.map((p) => ({ ...p, perNode: { [nodeIds[0]]: { notRead: "not read: no finalized head was read" } } }));
   const per = {};
   const calls = pairs.map(({ token, holder }) => ({ method: "eth_call", params: [{ to: lc(token), data: balanceOfData(holder) }, hexN(blockNumber)] }));
-  await Promise.all(
-    nodeIds.map(async (id) => {
-      const answers = await batchAt(id, calls);
-      per[id] = answers.map((a) => (a.notRead ? { notRead: a.notRead } : parseWord(a.result) === null ? { notRead: "not read: empty answer" } : { value: parseWord(a.result) }));
-    })
-  );
-  return pairs.map((p, i) => {
-    const perNode = Object.fromEntries(Object.entries(per).map(([id, arr]) => [id, arr[i]]));
-    return { ...p, perNode };
-  });
+  const value = (a) => (a.notRead ? { notRead: a.notRead } : parseWord(a.result) === null ? { notRead: "not read: empty answer" } : { value: parseWord(a.result) });
+  await Promise.all(nodeIds.map(async (id) => (per[id] = (await batchAt(id, calls)).map(value))));
+  const missing = fallback && !nodeIds.includes(fallback) ? pairs.map((_, i) => i).filter((i) => nodeIds.filter((id) => !per[id][i].notRead).length < 2) : [];
+  if (missing.length) {
+    const answers = await batchAt(fallback, missing.map((i) => calls[i]));
+    per[fallback] = [];
+    missing.forEach((i, k) => (per[fallback][i] = value(answers[k])));
+  }
+  return pairs.map((p, i) => ({ ...p, perNode: Object.fromEntries(Object.entries(per).filter(([, arr]) => arr[i] !== undefined).map(([id, arr]) => [id, arr[i]])) }));
 }
 
 /** Tie a balance read at two nodes to an expected value (BigInt), or just agree on it when expected is null. */

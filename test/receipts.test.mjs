@@ -71,9 +71,11 @@ test("receipt line for binding 150 (event 6045): tied and sealed; corrupted copi
   const l2 = await receiptLine({ event, proof, binding: tampered, receipts, minFinal: MIN_FINAL, registryKey: KEY, readAt: "test" });
   assert.equal(l2.sealed, false);
   assert.notEqual(l2.state, STATE.TIED);
-  // the binding's amount altered: Base contradicts it
+  // the binding's top-level amount altered: the tie follows the sealed payload, and a record that contradicts its
+  // own payload is not sealed, so the line cannot tick
   const l3 = await receiptLine({ event, proof, binding: { ...binding, amount_atomic: "4000000" }, receipts, minFinal: MIN_FINAL, registryKey: KEY, readAt: "test" });
-  assert.equal(l3.state, STATE.BROKEN);
+  assert.equal(l3.sealed, false);
+  assert.notEqual(l3.state, STATE.TIED);
 });
 
 test("event 1258 (binding 1) also seals with its own proof", async () => {

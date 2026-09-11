@@ -92,7 +92,7 @@ export function scheduleL(ctx) {
     why: "the listing names no funder wallet, so there is nothing on Base to tie",
     title: "listing 23 · the money path",
     sentence: [
-      `Listing 23 promises ${amount} (funding_mode: ${L.funding_mode}). It names no funder wallet, so there is nothing to tie. ${L.economics?.amount_paid_atomic === "0" ? "Nothing has been paid" : "Paid: " + L.economics?.amount_paid_atomic}; ${routes.filter((b) => b.receipt_id).length} of ${routes.length} routes carry a receipt.`,
+      `Listing 23 promises ${amount} (funding_mode: ${L.funding_mode}). It names no funder wallet, so there is nothing on Base to tie yet. ${(L.awards ?? []).length ? `${(L.awards ?? []).length} award${L.awards.length === 1 ? "" : "s"} on record; paid so far: ${formatAsset(parseAtomic(L.economics?.amount_paid_atomic) ?? 0n, L.token)}.` : "Not decided yet: no award on record."}`,
     ],
     says: [
       { label: "listing", value: `${amount}, max_awards ${L.max_awards}, settlement ${L.settlement_mode}, funding_mode ${L.funding_mode}, funder_address ${L.funder_address ?? "null"}`, source: "GET /api/listings/23", readAt: ctx.readAt },
@@ -109,7 +109,7 @@ export function scheduleL(ctx) {
     state: STATE.NIL,
     why: "routes are registry records; a citizen-key signature can be checked on demand below",
     title: "who can be paid if picked",
-    sentence: [`${withRoute} of ${submitters.size} submitters hold a route in the listing's asset (${L.token === "0x9e00fc92493451eba1c63dd3880d68b622037ba3" ? "1F916" : L.token}) that lives past the declared decision window (${isoMin(decideBy)}).${firstLapse ? ` The first route to lapse is ${firstLapse.b.handle}'s, at ${isoMin(firstLapse.exp)}.` : ""} After ${isoMin(close)} no route can be filed.`],
+    sentence: [`${withRoute} of ${submitters.size} submitters hold a route in the listing's asset (${L.token === "0x9e00fc92493451eba1c63dd3880d68b622037ba3" ? "1F916" : L.token}) that lives past the declared decision window (${isoMin(decideBy)}).${firstLapse ? ` The first route to lapse is ${firstLapse.b.handle}'s, at ${isoMin(firstLapse.exp)}.` : ""} ${now < close ? `The other ${submitters.size - withRoute} can still file one until ${isoMin(close)}; after that, no route can be filed.` : `Since ${isoMin(close)} no route can be filed.`}`],
     extra: { rows, close, decideBy, now, firstLapse },
     handles: rows.map((r) => r.handle),
     notVerified: [

@@ -142,9 +142,9 @@ export function sentenceEl(parts) {
 
 export function footingEl(lines, label = "footing", code = "") {
   const bar = el("p", { class: "footing", "aria-label": label });
-  // Clocks (F) and forgery exhibits (G) are not money claims, so they are counted, not footed.
-  if (code === "F") return bar.append(el("span", { class: "ft" }, glyph("clock"), ` ${lines.length} clock${lines.length === 1 ? "" : "s"}, not in the footing`)), bar;
-  if (code === "G") return bar.append(el("span", { class: "ft m-broken" }, glyph("forgery"), ` ${lines.length} exhibit${lines.length === 1 ? "" : "s"}, not in the footing`)), bar;
+  // Clocks (F) and forgery exhibits (G) are not money claims, so they are counted, never marked tied or broken.
+  if (code === "F") return bar.append(el("span", { class: "ft" }, glyph("clock"), ` ${lines.length} clock${lines.length === 1 ? "" : "s"}: dates the registry keeps, not money claims`)), bar;
+  if (code === "G") return bar.append(el("span", { class: "ft m-broken" }, glyph("forgery"), ` ${lines.length} exhibit${lines.length === 1 ? "" : "s"}: do not pay any address in them`)), bar;
   const f = footing(lines);
   for (const s of [STATE.TIED, STATE.BROKEN, STATE.BLIND, STATE.UNREAD, STATE.PENDING, STATE.NIL]) {
     if (!f[s]) continue;
@@ -176,15 +176,19 @@ export function renderLine(line, { onOpen } = {}) {
   return art;
 }
 
-/** A forgery exhibit: the real address and the forgery stacked, copied characters dimmed, differing ones red. */
+/** A forgery exhibit: each real address and its forgery stacked, copied characters dimmed, differing ones red. */
 function exhibitEl(x) {
   const sec = el("section", { class: "d-exhibit" }, el("h4", { text: "THE EXHIBIT" }));
   const row = (k, ...v) => sec.append(el("div", { class: "row" }, el("span", { class: "k", text: k }), el("span", { class: "v" }, ...v)));
-  if (x.mimic) {
-    row("the real one", addrEl(x.mimic.real, { full: true }), el("span", { class: "muted", text: ` ${x.mimic.label}` }));
-    row("the forgery", addrEl(x.mimic.fake, { forgery: true, compareTo: x.mimic.real }));
-    row("what it copies", el("span", { class: "mono", text: `the first ${x.mimic.prefix} and the last ${x.mimic.suffix} of 40 hex characters, the ones a hurried eye checks` }));
+  const mimics = x.mimics ?? (x.mimic ? [x.mimic] : []);
+  const MAX = 12;
+  for (const [i, m] of mimics.slice(0, MAX).entries()) {
+    if (i) sec.append(el("hr", { class: "pair" }));
+    row("the real one", addrEl(m.real, { full: true }), el("span", { class: "muted", text: ` ${m.label}` }));
+    row("the forgery", addrEl(m.fake, { forgery: true, compareTo: m.real }));
+    row("what it copies", el("span", { class: "mono", text: `the first ${m.prefix} and the last ${m.suffix} of 40 hex characters, the ones a hurried eye checks` }));
   }
+  if (mimics.length > MAX) sec.append(el("p", { class: "muted", text: `${mimics.length - MAX} more lookalike pairs in this exhibit are counted, not shown.` }));
   const seen = new Set();
   for (const e of x.items ?? []) {
     if (e.kind !== "counterfeit" || seen.has(e.token)) continue;
@@ -195,6 +199,22 @@ function exhibitEl(x) {
 }
 
 // ---- the proof drawer (native <dialog>: Esc closes it, focus returns) ---------------------------------------
+
+const SAYS_HEADINGS = [
+  ["registry", "THE SOCIETY SAYS"],
+  ["witness", "GITHUB'S WITNESS RECORDED"],
+  ["indexer", "THE INDEXER LISTS (a hint, never a tick)"],
+  ["file", "THIS PAGE'S OWN FILE"],
+];
+/** The speaker of one row: given by the check, or read off its source. Exported for the tests. */
+export function saysKind(s) {
+  if (s.kind) return s.kind;
+  const src = String(s.source ?? "");
+  if (/blockscout/i.test(src)) return "indexer";
+  if (/^data\//.test(src)) return "file";
+  if (/raw\.githubusercontent\.com|witness\//.test(src)) return "witness";
+  return "registry";
+}
 
 export function openDrawer(line, all = drawerLines) {
   drawerLines = all;
@@ -208,12 +228,20 @@ export function openDrawer(line, all = drawerLines) {
   prev.addEventListener("click", () => openDrawer(all[idx - 1], all));
   next.addEventListener("click", () => openDrawer(all[idx + 1], all));
 
-  const says = el("section", { class: "d-says" }, el("h4", { text: "THE SOCIETY SAYS" }));
-  for (const s of line.says) says.append(el("div", { class: "row" }, el("span", { class: "k", text: s.label }), el("span", { class: "v" }, bdi(s.value, 1200, "quoted")), el("span", { class: "src", text: `${s.source}${s.readAt ? " · read " + s.readAt : ""}` })));
+  // Who is speaking in each row: the registry, the indexer, a file this page ships, or the witness on GitHub.
+  // Only the registry's own words go under THE SOCIETY SAYS.
+  const saysBlocks = [];
+  for (const [kind, heading] of SAYS_HEADINGS) {
+    const rows = line.says.filter((s) => saysKind(s) === kind);
+    if (!rows.length) continue;
+    const sec = el("section", { class: `d-says k-${kind}` }, el("h4", { text: heading }));
+    for (const s of rows) sec.append(el("div", { class: "row" }, el("span", { class: "k", text: s.label }), el("span", { class: "v" }, bdi(s.value, 1600, "quoted")), el("span", { class: "src", text: `${s.source}${s.readAt ? " · read " + s.readAt : ""}` })));
+    saysBlocks.push(sec);
+  }
   const shows = el("section", { class: "d-shows" }, el("h4", { text: "THE CHAIN SHOWS" }));
   if (!line.shows.length) shows.append(el("p", { class: "muted", text: "nothing read on Base for this line" }));
   const nodeName = (id) => (NODES[id] ? `${new URL(NODES[id].url).host} (${NODES[id].operator})` : id);
-  for (const s of line.shows) shows.append(el("div", { class: "row" }, el("span", { class: "k", text: nodeName(s.node) }), el("span", { class: "v mono", text: s.text })));
+  for (const s of line.shows) shows.append(s.group ? el("h5", { class: "grp", text: s.group }) : el("div", { class: "row" }, el("span", { class: "k", text: nodeName(s.node) }), el("span", { class: "v mono", text: s.text })));
   const log = el("section", { class: "d-log" }, el("h4", { text: "THE SOCIETY'S LOG" }));
   if (!line.log.length) log.append(el("p", { class: "muted", text: "no log check on this line" }));
   for (const s of line.log) log.append(el("div", { class: `row ${s.ok === true ? "ok" : s.ok === false ? "bad" : "unk"}` }, el("span", { class: "k" }, glyph(s.ok === true ? STATE.TIED : s.ok === false ? STATE.BROKEN : STATE.UNREAD)), el("span", { class: "v", text: s.label })));
@@ -226,7 +254,7 @@ export function openDrawer(line, all = drawerLines) {
       el("header", { class: "d-head" }, el("h2", { id: "drawer-title", tabindex: "-1" }, markEl(line), ` ${line.ref} · `, bdi(line.title, 160, "title")), el("div", { class: "d-nav" }, prev, next, close)),
       el("p", { class: "d-why", text: `${LABEL[line.state]}${line.why ? ": " + line.why : ""}` }),
       extra,
-      says,
+      ...saysBlocks,
       shows,
       log,
       nv,

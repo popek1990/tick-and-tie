@@ -2,7 +2,12 @@
 //
 // The maintainer wrote it as prose in #1916: "Ninety-nine of you did work here. Three got paid." This view computes
 // that sentence live, for every citizen, and checks the "paid" half on Base: a receipt counts only if schedule A
-// tied it at two nodes, and "paid with no receipt" counts only transfers schedule C tied to a bound address.
+// tied it at two nodes, and "paid with no receipt" counts only payments schedule C tied, by the registry's own rule,
+// to citizens who hold no receipt at all.
+//
+// Each count is a count of citizens, from one source: "handed in work" from listing-submission events only,
+// "filed a payout route" from payout-binding events only. The rail's own totals (submissions, bindings, receipts:
+// counts of records, not of citizens) are printed beside them.
 //
 // Cost: the citizen list is 1,000 rows per page (3 pages today) plus two event lists. It is read once per visit.
 
@@ -13,7 +18,7 @@ export const LEVELS = Object.freeze([
   Object.freeze({ key: "none", label: "registered, no money trail" }),
   Object.freeze({ key: "handed", label: "handed in work" }),
   Object.freeze({ key: "routed", label: "filed a payout route" }),
-  Object.freeze({ key: "paid-unseen", label: "paid on Base, no receipt (tied at two nodes)" }),
+  Object.freeze({ key: "paid-unseen", label: "paid on Base, no receipt at all (tied at two nodes)" }),
   Object.freeze({ key: "receipted", label: "holds a receipt, tied on both ledgers" }),
 ]);
 
@@ -32,37 +37,69 @@ async function allCitizens() {
   return { rows, total, complete: false, error: "stopped after 6 pages" };
 }
 
-export async function census(ctx) {
-  const [cit, subs, binds] = await Promise.all([allCitizens(), registry("/api/events?kind=listing-submission"), registry("/api/events?kind=payout-binding")]);
+/** The furthest state per handle, and the citizen counts, from already-read inputs. Pure, for the tests. */
+export function censusOf({ citizens, submissions, bindings, observerPayments = [], receiptLines = [] }) {
   const level = new Map();
   const bump = (handle, k) => {
     if (!handle) return;
     const i = LEVELS.findIndex((l) => l.key === k);
     if ((level.get(handle) ?? 0) < i) level.set(handle, i);
   };
-  const eventsComplete = (r) => r.ok && r.json.has_more === false;
-  for (const e of subs.ok ? subs.json.events : []) bump(e.citizen, "handed");
-  for (const e of binds.ok ? binds.json.events : []) bump(e.citizen, "routed");
-  for (const p of ctx.observerPayments ?? []) for (const b of p.match?.bindings ?? []) bump(b.handle, "paid-unseen");
-  for (const l of ctx.receiptLines ?? []) if (l.state === STATE.TIED) for (const h of l.handles) bump(h, "receipted");
-
-  const seen = new Set(cit.rows.map((c) => c.handle));
-  const dots = cit.rows
+  const handed = new Set(submissions.map((e) => e.citizen).filter(Boolean));
+  const routed = new Set(bindings.map((e) => e.citizen).filter(Boolean));
+  const unseen = new Set(observerPayments.map((p) => p.handle).filter(Boolean));
+  const holders = new Set(receiptLines.flatMap((l) => l.handles ?? []));
+  for (const h of handed) bump(h, "handed");
+  for (const h of routed) bump(h, "routed");
+  for (const h of unseen) if (!holders.has(h)) bump(h, "paid-unseen");
+  for (const l of receiptLines) if (l.state === STATE.TIED) for (const h of l.handles) bump(h, "receipted");
+  const dots = citizens
     .slice()
     .sort((a, b) => a.created_at - b.created_at || a.citizen_id - b.citizen_id)
     .map((c) => ({ handle: c.handle, id: c.citizen_id, level: level.get(c.handle) ?? 0 }));
+  const inList = new Set(citizens.map((c) => c.handle));
   const count = (k) => dots.filter((d) => LEVELS[d.level].key === k).length;
-  const atLeast = (k) => dots.filter((d) => d.level >= LEVELS.findIndex((l) => l.key === k)).length;
-  const summary = {
-    total: cit.total ?? dots.length,
-    read: dots.length,
-    complete: cit.complete,
-    handed: atLeast("handed"),
-    routed: atLeast("routed"),
-    receipted: count("receipted"),
-    paidUnseen: count("paid-unseen"),
-    eventsComplete: eventsComplete(subs) && eventsComplete(binds),
-    notInList: [...level.keys()].filter((h) => !seen.has(h)),
+  return {
+    dots,
+    counts: {
+      handed: [...handed].filter((h) => inList.has(h)).length,
+      routed: [...routed].filter((h) => inList.has(h)).length,
+      receipted: count("receipted"),
+      paidUnseen: count("paid-unseen"),
+      unseenCitizens: unseen.size,
+    },
+    notInList: [...level.keys()].filter((h) => !inList.has(h)),
   };
-  return { dots, summary, error: cit.error ?? null };
+}
+
+/** The census's own reads (the citizen list and two event lists). Started early; census() waits for schedule C. */
+export async function readCensusInputs() {
+  const [cit, subs, binds] = await Promise.all([allCitizens(), registry("/api/events?kind=listing-submission"), registry("/api/events?kind=payout-binding")]);
+  return { cit, subs, binds };
+}
+
+export async function census(ctx, inputs = null) {
+  const { cit, subs, binds } = inputs ?? (await readCensusInputs());
+  if (!cit.rows.length) return { dots: [], summary: null, error: `the citizen list was not read (${cit.error ?? "empty"})` };
+  const eventsComplete = (r) => r.ok && r.json.has_more === false;
+  const c = censusOf({
+    citizens: cit.rows,
+    submissions: subs.ok ? subs.json.events ?? [] : [],
+    bindings: binds.ok ? binds.json.events ?? [] : [],
+    observerPayments: ctx.observerPayments ?? [],
+    receiptLines: ctx.receiptLines ?? [],
+  });
+  const totals = ctx.docs.rail?.totals ?? null;
+  const summary = {
+    total: cit.total ?? c.dots.length,
+    read: c.dots.length,
+    complete: cit.complete,
+    ...c.counts,
+    submissionsRead: subs.ok,
+    bindingsRead: binds.ok,
+    eventsComplete: eventsComplete(subs) && eventsComplete(binds),
+    rail: totals ? { submissions: totals.submissions, bindings: totals.bindings, receipts: totals.receipts } : null,
+    notInList: c.notInList,
+  };
+  return { dots: c.dots, summary, error: cit.error ?? null };
 }

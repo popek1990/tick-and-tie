@@ -11,7 +11,8 @@
 // /human/economy page reads Base the same way (two of four nodes must agree). The methods below are all reads.
 // Moving money needs a signature, and this page holds no key and never asks for one: there is no send or sign
 // method in the allowlist, no wallet object is ever touched, and a call that is not in the allowlist is refused
-// here before any byte leaves the browser (tests: test/net.test.mjs).
+// here before any byte leaves the browser (scripts/check-readonly.mjs R8 drives these refusals through a stub
+// fetch; test/smoke.mjs watches every request in a real browser).
 //
 // The shape (one GET-only module, origins checked after URL parsing, a runtime refusal rather than a promise)
 // follows The Fold's js/api.js by tardis-relay, which the judge read and praised (c38636). No code is copied.
@@ -24,14 +25,18 @@ export const WITNESS = "https://raw.githubusercontent.com";
 
 // Nodes. `operator` matters: a tie needs two different operators (a single liar is caught by the other).
 // publicnode refuses archive reads ("Archive requests require a personal token"), so it only votes on the head.
-// tenderly caps eth_getLogs at 1,000 blocks; it is here for the observer replay. 1rpc (410 "discontinued",
-// silent nulls for old data) and llamarpc (HTTP 525) were tested and left out.
+// Ties are read at base and tenderly (both archive, both batch); drpc is the third voice, asked only for what one
+// of them did not answer (its free plan batches 3 at most). tenderly caps eth_getLogs at 1,000 blocks. 1rpc (410
+// "discontinued", silent nulls for old data) and llamarpc (HTTP 525) were tested and left out.
 export const NODES = Object.freeze({
   base: Object.freeze({ url: "https://mainnet.base.org", operator: "Coinbase", archive: true, batch: 8, logsSpan: 2000 }),
   drpc: Object.freeze({ url: "https://base.drpc.org", operator: "dRPC", archive: true, batch: 3, logsSpan: 1000 }),
   publicnode: Object.freeze({ url: "https://base-rpc.publicnode.com", operator: "Allnodes", archive: false, batch: 6, logsSpan: 0 }),
-  tenderly: Object.freeze({ url: "https://base.gateway.tenderly.co", operator: "Tenderly", archive: true, batch: 1, logsSpan: 1000 }),
+  tenderly: Object.freeze({ url: "https://base.gateway.tenderly.co", operator: "Tenderly", archive: true, batch: 8, logsSpan: 1000 }),
 });
+// Who votes on a tie, and who is asked when one of them did not answer.
+export const TIE_NODES = Object.freeze(["base", "tenderly"]);
+export const FALLBACK_NODE = "drpc";
 
 // The CSP connect-src in index.html must equal this list exactly (check-readonly R5).
 export const FETCH_ORIGINS = Object.freeze([
@@ -87,7 +92,7 @@ export const CALL_TARGETS = Object.freeze([
 // 2.14 GB in an hour), and public Base nodes are a shared resource too.
 export const BUDGET = Object.freeze({
   registry: { max: 60, inflight: 3, gapMs: 150, capBytes: 1_200_000 },
-  indexer: { max: 16, inflight: 2, gapMs: 250, capBytes: 600_000 },
+  indexer: { max: 20, inflight: 2, gapMs: 250, capBytes: 600_000 },
   witness: { max: 2, inflight: 1, gapMs: 0, capBytes: 1_200_000 },
   rpc: { max: 150, inflight: 2, gapMs: 350, capBytes: 1_000_000 },
   timeoutMs: 20_000,
@@ -222,10 +227,12 @@ function parseJson(r) {
   }
 }
 
-// One listing or one binding costs the registry a second or more to build, and three at once were refused on
-// 2026-09-11 (the refusal arrives without CORS headers, so the browser can only call it a network error). Those
-// paths go one at a time.
+// One listing or one binding costs the registry a second or more to build. On 2026-09-11 three at once were
+// refused, and so was the seventh in about ten seconds one at a time (HTTP 429, arriving without CORS headers,
+// so a browser can only call it a network error). Those paths go one at a time, two seconds apart, and the page
+// asks for as few as it can: receipts and funder bindings come from committed indexes the page re-checks.
 const HEAVY = /^\/api\/(listings|payout-bindings)\/\d+$/;
+const HEAVY_GAP_MS = 2000;
 
 /** GET from the registry. Returns {ok, json} or {ok:false, error}. Never throws for network trouble. */
 export async function registry(path) {
@@ -237,13 +244,13 @@ export async function registry(path) {
     if (counters.registry >= b.max) return { ok: false, status: 0, error: `not read: this page's registry budget (${b.max} requests) is spent` };
     counters.registry++;
     return heavy
-      ? paced("registry-heavy", 1, 250, () => send("registry", url, { method: "GET", headers: { accept: "application/json" } }, b.capBytes))
+      ? paced("registry-heavy", 1, HEAVY_GAP_MS, () => send("registry", url, { method: "GET", headers: { accept: "application/json" } }, b.capBytes))
       : paced("registry", b.inflight, b.gapMs, () => send("registry", url, { method: "GET", headers: { accept: "application/json" } }, b.capBytes));
   };
   let r = await once();
-  // One retry, after a pause, on a network error or a 5xx; never on a 4xx.
-  if (!r.ok && (r.status === 0 || r.status >= 500) && !/budget/.test(r.error ?? "")) {
-    await new Promise((res) => setTimeout(res, 2500));
+  // One retry, after a pause, on a network error, a 429 or a 5xx; never on another 4xx.
+  if (!r.ok && (r.status === 0 || r.status === 429 || r.status >= 500) && !/budget/.test(r.error ?? "")) {
+    await new Promise((res) => setTimeout(res, heavy ? 6000 : 2500));
     r = await once();
   }
   return parseJson(r);
@@ -260,10 +267,32 @@ export async function indexer(path) {
 }
 
 /**
- * GET a file this page ships next to itself (the committed baseline and the bindings index). Same origin only,
- * two named files, so the CSP's connect-src 'self' is used by exactly this.
+ * Newest-first pages of one indexer list, following its own next_page_params, until an item at or below
+ * `stopBlock` is seen, the list ends, or `maxPages` pages were read. `complete` says whether it reached back.
  */
-export const LOCAL_FILES = Object.freeze(["data/baseline.json", "data/bindings.json"]);
+export async function indexerPages(path, stopBlock, maxPages = 3) {
+  const items = [];
+  let url = path;
+  for (let page = 1; ; page++) {
+    const r = await indexer(url);
+    if (!r.ok) return { ok: page > 1, items, complete: false, error: r.error };
+    const got = r.json.items ?? [];
+    items.push(...got);
+    const next = r.json.next_page_params;
+    const oldest = got.length ? Math.min(...got.map((it) => Number(it.block_number ?? 0))) : null;
+    if (!next || (oldest !== null && oldest <= stopBlock)) return { ok: true, items, complete: true };
+    if (page >= maxPages) return { ok: true, items, complete: false, error: `stopped after ${maxPages} pages` };
+    const keys = Object.keys(next);
+    if (!keys.length || !keys.every((k) => ["block_number", "index", "items_count"].includes(k))) return { ok: true, items, complete: false, error: "the next page needs a parameter this page does not send" };
+    url = `${path}${path.includes("?") ? "&" : "?"}${keys.map((k) => `${k}=${encodeURIComponent(String(next[k]))}`).join("&")}`;
+  }
+}
+
+/**
+ * GET a file this page ships next to itself (the committed baseline, the bindings index, the receipts index).
+ * Same origin only, three named files, so the CSP's connect-src 'self' is used by exactly this.
+ */
+export const LOCAL_FILES = Object.freeze(["data/baseline.json", "data/bindings.json", "data/receipts.json"]);
 export async function local(file) {
   if (!LOCAL_FILES.includes(file) || typeof location === "undefined") throw new Refused("refused: local file");
   const url = new URL(file, location.href);

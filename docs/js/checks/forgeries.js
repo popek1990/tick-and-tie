@@ -5,15 +5,69 @@
 // sometimes with an invisible character in it. The maintainer's own rule: "Pay only to the address on the binding,
 // never one copied from wallet history" (c47657).
 //
+// Folded into campaigns, not one line per address: lookalikes of listing 23's routes first (the next payment the
+// judge makes), then one line per real token a counterfeit imitates, then zero-value transfers of real tokens.
+// Each exhibit is counted in one line. The drawer lists every lookalike pair.
+//
 // This schedule never makes a forgery easier to copy: forged addresses are printed unselectable, labelled DO NOT
 // PAY, and never put in a CITE block. It reports what the indexer lists; it cannot say who did it or why.
 
 import { indexer } from "../net.js";
-import { lc, isAddress, isLookalike, overlap, counterfeitOf, reveal, short, parseAtomic, ASSETS } from "../codec.js";
+import { lc, isAddress, isLookalike, overlap, counterfeitOf, reveal, short, parseAtomic, plural, ASSETS } from "../codec.js";
 import { line, STATE } from "../lines.js";
 
+/** Up to `max` labels, then "and N more". */
+function listOf(labels, max = 4) {
+  const l = labels.length > max ? [...labels.slice(0, max), `${labels.length - max} more`] : labels;
+  return l.length > 1 ? `${l.slice(0, -1).join(", ")} and ${l[l.length - 1]}` : l[0] ?? "";
+}
+
+/** Fold exhibits into campaign lines. Pure, so the tests can feed it hand-made exhibits. */
+export function foldExhibits(exhibits) {
+  const used = new Set();
+  const groups = [];
+  const take = (key, title, list, extra = {}) => {
+    const fresh = list.filter((e) => !used.has(e));
+    if (!fresh.length) return;
+    fresh.forEach((e) => used.add(e));
+    groups.push({ key, title, items: fresh, ...extra });
+  };
+  take("l23", "lookalikes of routes filed on listing 23", exhibits.filter((e) => e.mimic?.kind === "l23"));
+  const byPretends = new Map();
+  for (const e of exhibits) if (e.kind === "counterfeit") byPretends.set(e.pretends, [...(byPretends.get(e.pretends) ?? []), e]);
+  for (const [pretends, list] of [...byPretends].sort((a, b) => b[1].length - a[1].length)) take(`fake-${pretends}`, `tokens that are not ${pretends} but call themselves ${pretends}`, list, { pretends });
+  take("zero", "zero-value transfers of real tokens, next to lookalikes", exhibits.filter((e) => e.kind === "zero-value"));
+  take("other", "other transfers involving lookalikes", exhibits);
+  return groups;
+}
+
+function sentenceOf(g) {
+  const mimics = [...new Map(g.items.filter((e) => e.mimic).map((e) => [e.mimic.fake, e.mimic])).values()];
+  const reals = [...new Set(mimics.map((m) => m.label))];
+  const n = g.items.length;
+  if (g.key === "l23") {
+    const handles = [...new Set(mimics.map((m) => m.handle).filter(Boolean))];
+    return [`${plural(mimics.length, "lookalike address", "lookalike addresses")} copy routes filed on listing 23 (`, ...handles.flatMap((h, i) => [i ? ", " : "", { handle: h }]), `), in ${plural(n, "transfer")}. Whoever pays listing 23: pay the address on the binding, never one from wallet history (c47657).`];
+  }
+  if (g.pretends) {
+    const symbols = [...new Set(g.items.map((e) => e.symbol))];
+    const contracts = new Set(g.items.map((e) => e.token)).size;
+    return [
+      `A token that is not ${g.pretends} calls itself `,
+      ...symbols.slice(0, 3).flatMap((s, i) => [i ? " / " : "", { symbol: s }]),
+      symbols.length > 3 ? ` (and ${symbols.length - 3} more spellings)` : "",
+      `: ${plural(n, "transfer")} from ${plural(contracts, "contract")}${mimics.length ? `, involving ${plural(mimics.length, "lookalike address", "lookalike addresses")} of ${listOf(reals)}` : ""}. Any contract can emit a Transfer that names any sender.`,
+    ];
+  }
+  if (g.key === "zero") {
+    const tokens = [...new Set(g.items.map((e) => ASSETS[e.token]?.symbol ?? short(e.token)))];
+    return [`${plural(n, "zero-value transfer")} of real ${tokens.join(" and ")} between the society's wallets and ${plural(mimics.length, "lookalike address", "lookalike addresses")} of ${listOf(reals)}. A zero-value transfer puts the lookalike into the wallet's history, where a hurried copy picks it up.`];
+  }
+  return [`${plural(n, "other transfer")} involving ${plural(mimics.length, "lookalike address", "lookalike addresses")} of ${listOf(reals)}.`];
+}
+
 export async function scheduleG(ctx, wallets, knownPayees) {
-  const known = new Map([...wallets.map((w) => [lc(w.address), w.label]), ...knownPayees.map((p) => [lc(p.address), p.label])]);
+  const known = new Map([...wallets.map((w) => [lc(w.address), { label: w.label, kind: "wallet" }]), ...knownPayees.map((p) => [lc(p.address), { label: p.label, kind: p.kind ?? "payee", handle: p.handle ?? null }])]);
   const exhibits = [];
   const notes = [];
   for (const w of wallets) {
@@ -34,9 +88,9 @@ export async function scheduleG(ctx, wallets, knownPayees) {
       const fake = counterfeitOf(token, symbol);
       // a lookalike of any known address on either side
       let mimic = null;
-      for (const [addr, label] of known) {
+      for (const [addr, k] of known) {
         for (const side of [to, from]) {
-          if (isLookalike(side, addr)) mimic = { real: addr, fake: side, label, ...overlap(addr, side) };
+          if (isLookalike(side, addr)) mimic = { real: addr, fake: side, label: k.label, kind: k.kind, handle: k.handle ?? null, ...overlap(addr, side) };
         }
       }
       if (fake) exhibits.push({ kind: "counterfeit", token, symbol, pretends: fake, from, to, value, tx, block, wallet: w, mimic });
@@ -45,33 +99,8 @@ export async function scheduleG(ctx, wallets, knownPayees) {
     }
   }
   exhibits.sort((a, b) => b.block - a.block);
-  // One exhibit per forged address (or per counterfeit token when no address is mimicked): the same poisoner
-  // usually sends a zero-value real-token transfer and a counterfeit one to the same lookalike.
-  const groups = new Map();
-  for (const e of exhibits) {
-    const key = e.mimic ? `addr:${e.mimic.fake}` : `token:${e.token}`;
-    if (!groups.has(key)) groups.set(key, { mimic: e.mimic, items: [] });
-    groups.get(key).items.push(e);
-  }
-  const plural = (n, w) => `${n} ${w}${n === 1 ? "" : "s"}`;
-  const lines = [...groups.values()].slice(0, 24).map((g, i) => {
-    const first = g.items[0];
-    const zero = g.items.filter((e) => e.kind === "zero-value").length;
-    const fakes = g.items.filter((e) => e.kind === "counterfeit");
-    const fakeSymbols = [...new Set(fakes.map((e) => e.symbol))];
-    const around = [...new Set(g.items.map((e) => e.wallet.label))];
-    const parts = [];
-    if (zero) parts.push(`${plural(zero, "zero-value transfer")} of a real token`);
-    if (fakes.length) parts.push(`${plural(fakes.length, "transfer")} of a token that is not ${fakes[0].pretends} but calls itself `);
-    const other = g.items.length - zero - fakes.length;
-    if (other) parts.push(plural(other, "other transfer"));
-    const sentence = g.mimic
-      ? [
-          `An address that copies the first ${g.mimic.prefix} and last ${g.mimic.suffix} characters of ${g.mimic.label} appears next to ${around.join(" and ")}: `,
-          ...parts.flatMap((t, k) => [k ? "; " : "", t, ...(t.endsWith("calls itself ") ? fakeSymbols.flatMap((sym, j) => [j ? " / " : "", { symbol: sym }]) : [])]),
-          ".",
-        ]
-      : [`A token that is not ${first.pretends} calls itself `, { symbol: first.symbol }, `, in ${plural(g.items.length, "transfer")} naming ${around.join(" and ")}.`];
+  const lines = foldExhibits(exhibits).map((g, i) => {
+    const mimics = [...new Map(g.items.filter((e) => e.mimic).map((e) => [e.mimic.fake, e.mimic])).values()];
     return line({
       ref: `G-${i + 1}`,
       schedule: "G",
@@ -79,15 +108,17 @@ export async function scheduleG(ctx, wallets, knownPayees) {
       state: STATE.NIL,
       mark: "◆",
       why: "an exhibit, not a money claim",
-      title: g.mimic ? `a lookalike of ${g.mimic.label}` : `a token that calls itself ${first.pretends}`,
-      sentence,
-      says: g.items.slice(0, 6).map((e) => ({
+      title: g.title,
+      handles: g.key === "l23" ? [...new Set(mimics.map((m) => m.handle).filter(Boolean))] : [],
+      sentence: sentenceOf(g),
+      says: g.items.slice(0, 8).map((e) => ({
         label: `block ${e.block}`,
         value: `${e.kind}: ${e.symbol} ${e.value === 0n ? "0" : String(e.value)} atomic, ${short(e.from)} → ${short(e.to)}, token ${short(e.token)}, tx ${short(e.tx)}`,
-        source: `GET base.blockscout.com /api/v2/addresses/${short(e.wallet.address)}/token-transfers (a hint, never a tick)`,
+        source: `GET base.blockscout.com /api/v2/addresses/${short(e.wallet.address)}/token-transfers`,
+        kind: "indexer",
       })),
-      extra: { exhibit: true, mimic: g.mimic, items: g.items, first },
-      notVerified: ["who made it or why: not read", "whether anyone was fooled: not read", "anything beyond what the indexer lists: one indexer page per wallet was read"],
+      extra: { exhibit: true, mimics, items: g.items },
+      notVerified: ["who made these or why: not read", "whether anyone was fooled: not read", "anything beyond what the indexer lists: one indexer page per wallet was read", ...(g.items.length > 8 ? [`${g.items.length - 8} more transfers in this exhibit are counted, not listed`] : [])],
     });
   });
   return { lines, notes, count: exhibits.length };

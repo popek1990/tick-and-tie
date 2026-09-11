@@ -17,8 +17,8 @@ export const MARK = Object.freeze({
 
 export const LABEL = Object.freeze({
   [STATE.TIED]: "tied at two nodes, behind finality",
-  [STATE.BROKEN]: "two nodes agree, and not with the claim",
-  [STATE.BLIND]: "the registry's figure is not a reading by its own rule",
+  [STATE.BROKEN]: "the sources agree with each other, and not with the claim",
+  [STATE.BLIND]: "not a reading: the registry's figure is not a reading by its own rule",
   [STATE.UNREAD]: "not read (reason given)",
   [STATE.PENDING]: "on chain, not final yet",
   [STATE.NIL]: "nothing on chain to tie",
@@ -27,7 +27,7 @@ export const LABEL = Object.freeze({
 export const SHORT = Object.freeze({
   [STATE.TIED]: "tied",
   [STATE.BROKEN]: "break",
-  [STATE.BLIND]: "registry blind",
+  [STATE.BLIND]: "not a reading",
   [STATE.UNREAD]: "not read",
   [STATE.PENDING]: "pending",
   [STATE.NIL]: "nothing to tie",
@@ -51,8 +51,8 @@ export function line(p) {
     why: p.why ?? "",
     title: p.title ?? "",
     sentence: p.sentence ?? [],
-    says: p.says ?? [], // [{label, value, source}]
-    shows: p.shows ?? [], // [{label, perNode: {node: text}, verdict}]
+    says: p.says ?? [], // [{label, value, source, kind?: "registry" | "indexer" | "file" | "witness"}]
+    shows: p.shows ?? [], // [{node, text}] or [{group}] as a heading
     log: p.log ?? [], // [{label, ok: true|false|null, detail}]
     sealed: p.sealed ?? null, // true when the society-log proof passed
     notVerified: p.notVerified?.length ? p.notVerified : ["that the nodes that answered are independent: assumed"],
