@@ -65,28 +65,38 @@ async function boot() {
   ctx.heads = h;
   ctx.headRef = h.per.base?.number ? h.per.base : h.per.drpc?.number ? h.per.drpc : null;
   if (!ctx.minFinal) problems.push("no archive node answered the finalized head: chain lines below read as not read");
-  const b = await net.local("data/baseline.json").catch((e) => ({ ok: false, error: String(e.message) }));
-  if (b.ok) ctx.baseline = b.json;
-  else problems.push(`data/baseline.json: not read (${b.error})`);
+  const [b, bi] = await Promise.all(["data/baseline.json", "data/bindings.json"].map((f) => net.local(f).catch((e) => ({ ok: false, error: String(e.message) }))));
+  if (b.ok && b.json?.kind === "tick-and-tie.baseline.v1") ctx.baseline = b.json;
+  else problems.push(`data/baseline.json: not read (${b.error ?? "unexpected kind"})`);
+  if (bi.ok && bi.json?.kind === "tick-and-tie.bindings.v1") ctx.bindingsIndex = bi.json;
+  else problems.push(`data/bindings.json: not read (${bi.error ?? "unexpected kind"}); schedule C reads every listing live`);
   render();
 
-  const steps = [
-    ["A", "receipts, tied on both ledgers", () => scheduleA(ctx)],
-    ["C", "the observer and what it has not seen", () => scheduleC(ctx)],
-    ["L", "listing 23's routes and clocks", async () => scheduleL(ctx)],
-    ["F", "money that is due", () => scheduleF(ctx)],
-  ];
-  for (const [key, label, run] of steps) {
-    status(`Checking ${key}: ${label} …`);
+  // The schedules run side by side where they do not depend on each other: each door has its own pacing, so
+  // this changes the wall time, not the load on any server. A comes before C (C needs A's receipts) and before
+  // G (G needs A's payees); L comes before F (F needs L's clocks).
+  const running = new Set();
+  const showRunning = () => status(running.size ? `Checking ${[...running].sort().join(", ")} …` : "Finishing …");
+  const run = async (key, fn) => {
+    running.add(key);
+    showRunning();
     try {
-      results[key] = await run();
+      results[key] = await fn();
     } catch (e) {
       problems.push(`schedule ${key} stopped: ${e?.message ?? e}`);
       results[key] = [];
     }
+    running.delete(key);
+    showRunning();
     render();
-  }
-  status("Asking each public node the observer's own question …");
+  };
+  await run("L", async () => scheduleL(ctx));
+  const pA = run("A", () => scheduleA(ctx));
+  const pC = pA.then(() => run("C", () => scheduleC(ctx)));
+  const pF = run("F", () => scheduleF(ctx));
+  const pD = run("D", () => scheduleD(ctx));
+  const pG = pA.then(() => run("G", () => forgeries()));
+  await Promise.all([pC, pF]);
   try {
     results.today = await today(ctx, { cLines: results.C ?? [], fLines: results.F ?? [], lLines: results.L ?? [] });
   } catch (e) {
@@ -94,33 +104,6 @@ async function boot() {
     results.today = [];
   }
   render();
-  status("Checking D: the books, last …");
-  try {
-    results.D = await scheduleD(ctx);
-  } catch (e) {
-    problems.push(`schedule D stopped: ${e?.message ?? e}`);
-    results.D = [];
-  }
-  render();
-  status("Looking for forgeries around the society's wallets …");
-  try {
-    const wallets = [
-      { address: TREASURY, label: "the treasury" },
-      { address: PAYOUT_WALLET, label: "the society's payout wallet" },
-      ...((ctx.docs.rail?.observer?.marks ?? []).filter((m) => ![TREASURY, PAYOUT_WALLET].includes(lc(m.funder_address))).map((m) => ({ address: lc(m.funder_address), label: `funder wallet ${short(m.funder_address)}` }))),
-    ];
-    const payees = [];
-    for (const l of results.A ?? []) if (l.extra?.claim?.to) payees.push({ address: l.extra.claim.to, label: `${l.handles[0]}'s payout address` });
-    for (const bnd of ctx.docs.listing23?.bindings ?? []) payees.push({ address: bnd.payout_address, label: `${bnd.handle}'s route on listing 23` });
-    const g = await scheduleG(ctx, wallets, payees);
-    results.G = g.lines;
-    results.Gnotes = g.notes;
-  } catch (e) {
-    problems.push(`schedule G stopped: ${e?.message ?? e}`);
-    results.G = [];
-  }
-  render();
-  status("Reading the census (every citizen, through the money lens) …");
   try {
     results.census = await census(ctx);
     knownHandles = new Set(results.census.dots.map((d) => d.handle));
@@ -128,11 +111,27 @@ async function boot() {
   } catch (e) {
     problems.push(`census stopped: ${e?.message ?? e}`);
   }
+  await Promise.all([pD, pG]);
   results.controls = await controls();
   render();
   const spent = net.spent();
   const failedControls = results.controls.filter((c) => !c.pass).length;
   status(`Read at ${ctx.readAt} · ${spent.registry} registry GETs · ${spent.rpc} Base reads · ${spent.indexer} indexer GETs · controls: ${results.controls.length - failedControls}/${results.controls.length} corrupted copies failed, as they must${problems.length ? ` · ${problems.length} problem${problems.length === 1 ? "" : "s"} (see Legend)` : ""}.`);
+}
+
+/** Schedule G's inputs: the society's wallets, plus every payee address A tied and every route on listing 23. */
+async function forgeries() {
+  const wallets = [
+    { address: TREASURY, label: "the treasury" },
+    { address: PAYOUT_WALLET, label: "the society's payout wallet" },
+    ...(ctx.docs.rail?.observer?.marks ?? []).filter((m) => ![TREASURY, PAYOUT_WALLET].includes(lc(m.funder_address))).map((m) => ({ address: lc(m.funder_address), label: `funder wallet ${short(m.funder_address)}` })),
+  ];
+  const payees = [];
+  for (const l of results.A ?? []) if (l.extra?.claim?.to) payees.push({ address: l.extra.claim.to, label: `${l.handles[0]}'s payout address` });
+  for (const bnd of ctx.docs.listing23?.bindings ?? []) payees.push({ address: bnd.payout_address, label: `${bnd.handle}'s route on listing 23` });
+  const g = await scheduleG(ctx, wallets, payees);
+  results.Gnotes = g.notes;
+  return g.lines;
 }
 
 // ---- negative controls: every green here must be able to go red ------------------------------------------
@@ -226,9 +225,10 @@ function viewToday() {
   wrap.append(censusStrip());
   for (const k of ["A", "C", "L", "F", "G", "D"]) {
     const lines = results[k];
-    const sec = ui.scheduleSection(k, TITLES[k][0], TITLES[k][1], lines ? lines.slice(0, k === "D" ? 5 : 3) : null, { onOpen: openLine });
+    const show = k === "D" ? 5 : 3;
+    const sec = ui.scheduleSection(k, TITLES[k][0], TITLES[k][1], lines, { onOpen: openLine, show });
     if (!lines) sec.append(el("p", { class: "working", text: "working…" }));
-    else if (lines.length > (k === "D" ? 5 : 3)) sec.append(el("p", { class: "more" }, safeLink("route", `#/${k.toLowerCase()}`, `all ${lines.length} lines of ${k} ›`)));
+    else if (lines.length > show) sec.append(el("p", { class: "more" }, safeLink("route", `#/${k.toLowerCase()}`, `all ${lines.length} lines of ${k} ›`)));
     else if (!lines.length) sec.append(el("p", { class: "sub", text: "nothing in this schedule on this read" }));
     wrap.append(sec);
   }

@@ -6,6 +6,7 @@
 
 import { reveal, isAddress, lc, short, overlap, isTxHash } from "./codec.js";
 import { LABEL, SHORT, STATE, footing } from "./lines.js";
+import { NODES } from "./net.js";
 
 const SVGNS = "http://www.w3.org/2000/svg";
 const HANDLE = /^[A-Za-z0-9_.-]{1,64}$/;
@@ -63,9 +64,9 @@ export function safeLink(kind, value, label) {
 }
 
 /** Untrusted text, isolated and with hidden characters made visible. */
-export function bdi(text, max = 400, cls = "quoted") {
+export function bdi(text, max = 400, cls = "quoted", { strict = false } = {}) {
   const b = el("bdi", { class: cls });
-  for (const seg of reveal(text, max)) {
+  for (const seg of reveal(text, max, { strict })) {
     if (seg.text !== undefined) b.append(document.createTextNode(seg.text));
     else if (seg.hidden) b.append(el("span", { class: "cp", title: seg.hidden, text: `⟨${seg.hidden}⟩` }));
     else if (seg.note) b.append(el("span", { class: "trunc", text: seg.note }));
@@ -132,15 +133,18 @@ export function sentenceEl(parts) {
   for (const part of parts) {
     if (typeof part === "string") p.append(part);
     else if (part?.handle) p.append(handleEl(part.handle));
-    else if (part?.symbol !== undefined) p.append(bdi(part.symbol, 32, "quoted symbol"));
+    else if (part?.symbol !== undefined) p.append(bdi(part.symbol, 32, "quoted symbol", { strict: true }));
     else if (part?.addr) p.append(addrEl(part.addr));
   }
   return p;
 }
 
-export function footingEl(lines, label = "footing") {
-  const f = footing(lines);
+export function footingEl(lines, label = "footing", code = "") {
   const bar = el("p", { class: "footing", "aria-label": label });
+  // Clocks (F) and forgery exhibits (G) are not money claims, so they are counted, not footed.
+  if (code === "F") return bar.append(el("span", { class: "ft" }, glyph("clock"), ` ${lines.length} clock${lines.length === 1 ? "" : "s"}, not in the footing`)), bar;
+  if (code === "G") return bar.append(el("span", { class: "ft m-broken" }, glyph("forgery"), ` ${lines.length} exhibit${lines.length === 1 ? "" : "s"}, not in the footing`)), bar;
+  const f = footing(lines);
   for (const s of [STATE.TIED, STATE.BROKEN, STATE.BLIND, STATE.UNREAD, STATE.PENDING, STATE.NIL]) {
     if (!f[s]) continue;
     bar.append(el("span", { class: `ft m-${s}` }, glyph(s), ` ${f[s]} ${SHORT[s]}`));
@@ -171,6 +175,24 @@ export function renderLine(line, { onOpen } = {}) {
   return art;
 }
 
+/** A forgery exhibit: the real address and the forgery stacked, copied characters dimmed, differing ones red. */
+function exhibitEl(x) {
+  const sec = el("section", { class: "d-exhibit" }, el("h4", { text: "THE EXHIBIT" }));
+  const row = (k, ...v) => sec.append(el("div", { class: "row" }, el("span", { class: "k", text: k }), el("span", { class: "v" }, ...v)));
+  if (x.mimic) {
+    row("the real one", addrEl(x.mimic.real, { full: true }), el("span", { class: "muted", text: ` ${x.mimic.label}` }));
+    row("the forgery", addrEl(x.mimic.fake, { forgery: true, compareTo: x.mimic.real }));
+    row("what it copies", el("span", { class: "mono", text: `the first ${x.mimic.prefix} and the last ${x.mimic.suffix} of 40 hex characters, the ones a hurried eye checks` }));
+  }
+  const seen = new Set();
+  for (const e of x.items ?? []) {
+    if (e.kind !== "counterfeit" || seen.has(e.token)) continue;
+    seen.add(e.token);
+    row("the token", `${short(e.token)} calls itself `, bdi(e.symbol, 32, "quoted symbol", { strict: true }), `. It is not ${e.pretends}. Any contract can emit a Transfer that names any sender.`);
+  }
+  return sec;
+}
+
 // ---- the proof drawer (native <dialog>: Esc closes it, focus returns) ---------------------------------------
 
 export function openDrawer(line, all = drawerLines) {
@@ -189,36 +211,40 @@ export function openDrawer(line, all = drawerLines) {
   for (const s of line.says) says.append(el("div", { class: "row" }, el("span", { class: "k", text: s.label }), el("span", { class: "v" }, bdi(s.value, 1200, "quoted")), el("span", { class: "src", text: `${s.source}${s.readAt ? " · read " + s.readAt : ""}` })));
   const shows = el("section", { class: "d-shows" }, el("h4", { text: "THE CHAIN SHOWS" }));
   if (!line.shows.length) shows.append(el("p", { class: "muted", text: "nothing read on Base for this line" }));
-  for (const s of line.shows) shows.append(el("div", { class: "row" }, el("span", { class: "k", text: s.node }), el("span", { class: "v mono", text: s.text })));
+  const nodeName = (id) => (NODES[id] ? `${new URL(NODES[id].url).host} (${NODES[id].operator})` : id);
+  for (const s of line.shows) shows.append(el("div", { class: "row" }, el("span", { class: "k", text: nodeName(s.node) }), el("span", { class: "v mono", text: s.text })));
   const log = el("section", { class: "d-log" }, el("h4", { text: "THE SOCIETY'S LOG" }));
   if (!line.log.length) log.append(el("p", { class: "muted", text: "no log check on this line" }));
   for (const s of line.log) log.append(el("div", { class: `row ${s.ok === true ? "ok" : s.ok === false ? "bad" : "unk"}` }, el("span", { class: "k" }, glyph(s.ok === true ? STATE.TIED : s.ok === false ? STATE.BROKEN : STATE.UNREAD)), el("span", { class: "v", text: s.label })));
   const nv = el("section", { class: "d-nv" }, el("h4", { text: "NOT VERIFIED" }), el("ul", null, line.notVerified.map((t) => el("li", { text: t }))));
-  const extra = line.extra?.render ? line.extra.render() : null;
+  const extra = line.extra?.exhibit ? exhibitEl(line.extra) : null;
   const cite = line.cite ? el("section", { class: "d-cite" }, el("h4", { text: "CITE" }), el("pre", { text: `${line.cite}\n${location.origin}${location.pathname}${line.route}` })) : null;
 
   d.append(
-    el("header", { class: "d-head" }, el("h2", { id: "drawer-title" }, markEl(line), ` ${line.ref} · `, bdi(line.title, 160, "title")), el("div", { class: "d-nav" }, prev, next, close)),
-    el("p", { class: "d-why", text: `${LABEL[line.state]}${line.why ? ": " + line.why : ""}` }),
-    says,
-    shows,
-    log,
-    extra,
-    nv,
-    cite
+    ...[
+      el("header", { class: "d-head" }, el("h2", { id: "drawer-title", tabindex: "-1" }, markEl(line), ` ${line.ref} · `, bdi(line.title, 160, "title")), el("div", { class: "d-nav" }, prev, next, close)),
+      el("p", { class: "d-why", text: `${LABEL[line.state]}${line.why ? ": " + line.why : ""}` }),
+      extra,
+      says,
+      shows,
+      log,
+      nv,
+      cite,
+    ].filter(Boolean)
   );
   if (!d.open) d.showModal();
   d.querySelector("h2")?.focus?.();
 }
 
-export function scheduleSection(code, title, sub, lines, { onOpen, intro } = {}) {
+/** A schedule: heading, the footing over ALL its lines, then the first `show` lines (all when omitted). */
+export function scheduleSection(code, title, sub, lines, { onOpen, intro, show } = {}) {
   const s = el("section", { class: "schedule", id: `sched-${code}`, "aria-labelledby": `h-${code}` });
   s.append(el("h2", { id: `h-${code}` }, el("span", { class: "code", text: code }), ` ${title}`));
   if (sub) s.append(el("p", { class: "sub", text: sub }));
   if (intro) s.append(intro);
   if (lines?.length) {
-    s.append(footingEl(lines, `${code} footing`));
-    for (const l of lines) s.append(renderLine(l, { onOpen: (x) => onOpen?.(x, lines) }));
+    s.append(footingEl(lines, `${code} footing`, code));
+    for (const l of lines.slice(0, show ?? lines.length)) s.append(renderLine(l, { onOpen: (x) => onOpen?.(x, lines) }));
   }
   return s;
 }

@@ -11,17 +11,21 @@ import { groupInt, short } from "../codec.js";
 export async function today(ctx, { cLines, fLines, lLines }) {
   const items = [];
   const marks = ctx.docs.rail?.observer?.marks ?? [];
-  const behind = marks.filter((m) => ctx.minFinal && ctx.minFinal - m.last_block > 43_200).sort((a, b) => b.last_block - a.last_block);
+  const never = marks.filter((m) => !Number.isInteger(m.last_block)).length;
+  const behind = marks.filter((m) => Number.isInteger(m.last_block) && ctx.minFinal && ctx.minFinal - m.last_block > 43_200).sort((a, b) => b.last_block - a.last_block);
   if (behind.length) {
-    const m = behind[0];
+    const m = behind[0]; // the most recent mark: its next call is the one the observer is making now
     const r = await replay(m, ctx.minFinal);
-    const gapDays = ((ctx.minFinal - m.last_block) * 2) / 86400;
+    const days = behind.map((x) => Math.round(((ctx.minFinal - x.last_block) * 2) / 86400));
+    const lo = Math.min(...days);
+    const hi = Math.max(...days);
+    const span = lo === hi ? `${lo} days` : `${lo} to ${hi} days`;
     const unseen = (ctx.observerPayments ?? []).length;
     items.push({
       key: "observer",
       ref: "C",
       route: `#/c/${m.funder_address.toLowerCase()}`,
-      head: `The registry's payment observer is ${gapDays.toFixed(1)} days behind on ${behind.length} of ${marks.length} wallets it watches.`,
+      head: `The registry's payment observer is ${span} behind on ${behind.length} of the ${marks.length} wallets it watches${never ? `, and has never finished a read of ${never === 1 ? "one more" : `${never} more`}` : ""}.`,
       body: [
         `Its next question (eth_getLogs over ${groupInt(KEYED_RANGE)} blocks from ${short(m.funder_address)}), asked here just now:`,
         ...Object.entries(r.wide).map(([node, s]) => `${node}: ${s}`),

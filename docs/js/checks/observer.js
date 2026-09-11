@@ -110,15 +110,37 @@ async function outflowsAfter(ctx, wallet, afterBlock) {
   return { found, notes };
 }
 
+const fundersListings = (ctx, wallet) => (ctx.docs.rail?.listings ?? []).filter((l) => lc(l.funder_address) === wallet);
+
+/**
+ * Every binding on the funder's listings (the registry's matching rule needs all of them, open or closed). From
+ * the committed index (data/bindings.json) while GET /api/rail still shows the same binding counts for a listing,
+ * otherwise from GET /api/listings/:id, one at a time.
+ */
 async function fundersBindings(ctx, wallet) {
-  const listings = (ctx.docs.rail?.listings ?? []).filter((l) => lc(l.funder_address) === wallet);
+  const listings = fundersListings(ctx, wallet);
   const out = [];
+  const unread = [];
+  const live = [];
+  const indexed = [];
   for (const l of listings) {
+    const snap = ctx.bindingsIndex?.listings?.[l.listing_id];
+    const same = snap && !snap.bindings_has_more && snap.rail_worker_bindings === l.worker_bindings && snap.rail_verifier_bindings === l.verifier_bindings && lc(snap.funder_address) === wallet;
+    if (same) {
+      indexed.push(l.listing_id);
+      for (const b of snap.bindings) out.push({ ...b, listing_id: l.listing_id });
+      continue;
+    }
     const r = ctx.listingDetail ? await ctx.listingDetail(l.listing_id) : await registry(`/api/listings/${l.listing_id}`);
-    if (!r?.ok) continue;
-    for (const b of r.json.bindings ?? []) out.push({ ...b, listing_id: l.listing_id, funds_block_number: r.json.funds_block_number, created_at_listing: r.json.created_at });
+    if (!r?.ok) {
+      unread.push(l.listing_id);
+      continue;
+    }
+    live.push(l.listing_id);
+    for (const b of r.json.bindings ?? []) out.push({ ...b, listing_id: l.listing_id });
+    if (r.json.bindings_has_more) unread.push(`${l.listing_id} (bindings past the first page)`);
   }
-  return { listings, bindings: out };
+  return { bindings: out, unread, live, indexed };
 }
 
 export async function scheduleC(ctx) {
@@ -129,10 +151,16 @@ export async function scheduleC(ctx) {
   ctx.observerPayments = [];
   for (const mark of marks) {
     const wallet = lc(mark.funder_address);
-    const gap = ctx.minFinal ? ctx.minFinal - mark.last_block : null;
-    const lastAt = blockTime(mark.last_block, ctx.headRef);
-    const { found, notes } = await outflowsAfter(ctx, wallet, mark.last_block);
-    const { listings, bindings } = found.length ? await fundersBindings(ctx, wallet) : { listings: [], bindings: [] };
+    // last_block null: the observer has never finished a read of this wallet. Its zeros are then not readings at
+    // all; this page walks the wallet from the start of the committed baseline instead.
+    const never = !Number.isInteger(mark.last_block);
+    const from = never ? (ctx.baseline?.from_block ?? 0) : mark.last_block;
+    const gap = ctx.minFinal && !never ? ctx.minFinal - mark.last_block : null;
+    const lastAt = never ? null : blockTime(mark.last_block, ctx.headRef);
+    const listings = fundersListings(ctx, wallet);
+    const { found, notes } = await outflowsAfter(ctx, wallet, from);
+    const { bindings, unread, live, indexed } = found.length ? await fundersBindings(ctx, wallet) : { bindings: [], unread: [], live: [], indexed: [] };
+    if (unread.length) notes.push(`listing detail not read for listing${unread.length === 1 ? "" : "s"} ${unread.join(", ")}: a match there would be missed`);
     const receipts = found.length ? await receiptsAt(found.map((f) => f.tx)) : null;
     const payments = [];
     for (const f of found) {
@@ -143,29 +171,36 @@ export async function scheduleC(ctx) {
     }
     const unseen = payments.filter((p) => !p.receipted && p.tie.state === STATE.TIED && (p.match.rule === "creditable" || p.match.rule === "citizen-only"));
     ctx.observerPayments.push(...unseen.map((p) => ({ ...p, funder: wallet })));
-    const listingsAfter = listings.filter((l) => (l.created_at && lastAt ? l.created_at > lastAt.getTime() : false)).map((l) => l.listing_id);
-    const blind = (gap ?? 0) > 43_200 || unseen.length > 0;
+    const listingsAfter = listings.filter((l) => (never ? true : l.created_at && lastAt ? l.created_at > lastAt.getTime() : false)).map((l) => l.listing_id);
+    const blind = never || (gap ?? 0) > 43_200 || unseen.length > 0;
     const handleList = [...new Set(unseen.flatMap((p) => (p.match.bindings ?? []).map((b) => b.handle)))];
+    const since = never ? "and the observer has never finished a read of it" : `since the observer's last block, ${groupInt(gap)} blocks ago`;
+    const named = listings.length ? ` Listing${listings.length === 1 ? "" : "s"} ${listings.map((l) => l.listing_id).join(", ")} name${listings.length === 1 ? "s" : ""} it as funder.` : "";
     const sentence = unseen.length
-      ? ["The rail shows ", `${unseen.length === 1 ? "no payment" : "no payments"}`, " for ", ...handleList.flatMap((h, i) => [i ? ", " : "", { handle: h }]), `. Base shows ${unseen.length} from this wallet since the observer's last block, ${groupInt(gap)} blocks ago.`]
-      : [`The observer read this wallet up to block ${groupInt(mark.last_block)}, ${gap !== null ? groupInt(gap) + " blocks" : "an unknown distance"} behind finality. Base shows no unreceipted payment to a bound address since.`];
+      ? ["The rail shows ", `${unseen.length === 1 ? "no payment" : "no payments"}`, " for ", ...handleList.flatMap((h, i) => [i ? ", " : "", { handle: h }]), `. Base shows ${unseen.length} from this wallet, ${since}.`]
+      : never
+        ? [`The observer has never finished a read of this wallet (last_block is null; its last attempt: “${String(mark.last_error ?? "no error given").slice(0, 120)}”).${named} Base shows no unreceipted payment from it to a bound address.`]
+        : [`The observer read this wallet up to block ${groupInt(mark.last_block)}, ${gap !== null ? groupInt(gap) + " blocks" : "an unknown distance"} behind finality. Base shows no unreceipted payment to a bound address since.`];
     lines.push(
       line({
         ref: `C-${wallet.slice(2, 8)}`,
         schedule: "C",
         route: `#/c/${wallet}`,
         state: blind ? STATE.BLIND : STATE.TIED,
-        why: blind ? `the observer is ${groupInt(gap)} blocks (≈${Math.round((gap * BLOCK_SECONDS) / 86400)} days) behind; by the registry's own rule its zeros are not readings` : "the observer is current",
-        title: `${short(wallet)} · ${listings.length || "no"} listing${listings.length === 1 ? "" : "s"} name it as funder`,
+        why: never ? "the observer has no last_block for this wallet; by the registry's own rule its zeros are not readings" : blind ? `the observer is ${groupInt(gap)} blocks (≈${Math.round((gap * BLOCK_SECONDS) / 86400)} days) behind; by the registry's own rule its zeros are not readings` : "the observer is current",
+        title: `${short(wallet)} · ${listings.length ? listings.length : "no"} listing${listings.length === 1 ? " names" : "s name"} it as funder`,
         handles: handleList,
         sentence,
         says: [
           { label: "observer mark", value: `last_block ${mark.last_block}, updated ${isoMin(fromMs(mark.updated_at))}, last_error "${mark.last_error ?? "none"}", last range ${mark.last_range_from}–${mark.last_range_to}`, source: "GET /api/rail → observer.marks", readAt: ctx.readAt },
           { label: "the rule", value: rule, source: "GET /api/rail → observer", readAt: ctx.readAt },
           ...(listingsAfter.length ? [{ label: "listings posted after its last block", value: listingsAfter.map((id) => `listing ${id}`).join(", "), source: "GET /api/rail → listings[].created_at" }] : []),
+          ...(indexed.length || live.length
+            ? [{ label: "bindings matched against", value: `${bindings.length} bindings on listings ${[...indexed, ...live].sort((a, b) => a - b).join(", ")}${indexed.length ? `; from data/bindings.json (built ${ctx.bindingsIndex?.built_at ?? "?"}) for ${indexed.length}, whose binding counts on the rail are unchanged` : ""}${live.length ? `; read live for ${live.join(", ")}` : ""}`, source: indexed.length ? "data/bindings.json, checked against GET /api/rail counts" : "GET /api/listings/:id" }]
+            : []),
         ],
         shows: [
-          { node: "finalized", text: ctx.minFinal ? `min(finalized) ${groupInt(ctx.minFinal)}; the mark is ${groupInt(gap)} blocks behind (≈ ${lastAt ? isoMin(lastAt) : "?"})` : "not read" },
+          { node: "finalized", text: !ctx.minFinal ? "not read" : never ? `min(finalized) ${groupInt(ctx.minFinal)}; the mark has no last_block, so this page read from block ${groupInt(from)}` : `min(finalized) ${groupInt(ctx.minFinal)}; the mark is ${groupInt(gap)} blocks behind (≈ ${lastAt ? isoMin(lastAt) : "?"})` },
           ...payments.map((p) => ({
             node: `${p.tie.mark} block ${groupInt(p.block)}`,
             text: `${short(p.to)} ← ${formatAsset(p.value, p.token)} · ${p.receipted ? "has a receipt (schedule A)" : p.match.rule === "creditable" ? `creditable to listing ${p.match.listing}` : p.match.rule === "citizen-only" ? `bound on listings ${p.match.listings.join(" and ")} at this amount: citizen only` : p.match.rule === "bound-other-amount" ? "bound address, other amount" : "bound nowhere read"} · ${p.tie.why}`,
@@ -177,8 +212,8 @@ export async function scheduleC(ctx) {
           "the observer's own providers and keys: only its public marks are read",
           ...notes,
         ],
-        extra: { mark, payments, gap },
-        cite: `C ${short(wallet)}: observer last_block ${mark.last_block}, ${groupInt(gap)} behind min(finalized) ${ctx.minFinal}; ${unseen.length} tied payment(s) to bound addresses with no receipt`,
+        extra: { mark, payments, gap, never },
+        cite: `C ${short(wallet)}: observer last_block ${mark.last_block}${never ? "" : `, ${groupInt(gap)} behind min(finalized) ${ctx.minFinal}`}; ${unseen.length} tied payment(s) to bound addresses with no receipt`,
       })
     );
   }

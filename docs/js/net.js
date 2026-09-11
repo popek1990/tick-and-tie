@@ -218,13 +218,30 @@ function parseJson(r) {
   }
 }
 
+// One listing or one binding costs the registry a second or more to build, and three at once were refused on
+// 2026-09-11 (the refusal arrives without CORS headers, so the browser can only call it a network error). Those
+// paths go one at a time.
+const HEAVY = /^\/api\/(listings|payout-bindings)\/\d+$/;
+
 /** GET from the registry. Returns {ok, json} or {ok:false, error}. Never throws for network trouble. */
 export async function registry(path) {
   const url = checkRoute(REGISTRY, REGISTRY_ROUTES, path);
   const b = BUDGET.registry;
-  if (counters.registry >= b.max) return { ok: false, error: `not read: this page's registry budget (${b.max} requests) is spent` };
-  counters.registry++;
-  return parseJson(await paced("registry", b.inflight, b.gapMs, () => send("registry", url, { method: "GET", headers: { accept: "application/json" } }, b.capBytes)));
+  const heavy = HEAVY.test(url.pathname);
+  const once = () => {
+    if (counters.registry >= b.max) return { ok: false, status: 0, error: `not read: this page's registry budget (${b.max} requests) is spent` };
+    counters.registry++;
+    return heavy
+      ? paced("registry-heavy", 1, 250, () => send("registry", url, { method: "GET", headers: { accept: "application/json" } }, b.capBytes))
+      : paced("registry", b.inflight, b.gapMs, () => send("registry", url, { method: "GET", headers: { accept: "application/json" } }, b.capBytes));
+  };
+  let r = await once();
+  // One retry, after a pause, on a network error or a 5xx; never on a 4xx.
+  if (!r.ok && (r.status === 0 || r.status >= 500) && !/budget/.test(r.error ?? "")) {
+    await new Promise((res) => setTimeout(res, 2500));
+    r = await once();
+  }
+  return parseJson(r);
 }
 
 /** GET from Blockscout v2. Used to find where to look, never to decide a tick. */
@@ -237,10 +254,10 @@ export async function indexer(path) {
 }
 
 /**
- * GET a file this page ships next to itself (the committed baseline). Same origin only, one file, so the CSP's
- * connect-src 'self' is used by exactly this.
+ * GET a file this page ships next to itself (the committed baseline and the bindings index). Same origin only,
+ * two named files, so the CSP's connect-src 'self' is used by exactly this.
  */
-export const LOCAL_FILES = Object.freeze(["data/baseline.json"]);
+export const LOCAL_FILES = Object.freeze(["data/baseline.json", "data/bindings.json"]);
 export async function local(file) {
   if (!LOCAL_FILES.includes(file) || typeof location === "undefined") throw new Refused("refused: local file");
   const url = new URL(file, location.href);

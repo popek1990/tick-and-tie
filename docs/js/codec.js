@@ -59,16 +59,25 @@ export function formatUnits(atomic, decimals, shown = decimals) {
   const v = neg ? -atomic : atomic;
   const base = 10n ** BigInt(decimals);
   const whole = group((v / base).toString());
-  let frac = (v % base).toString().padStart(decimals, "0").slice(0, shown);
-  if (decimals > shown && (v % base) !== 0n && /^0*$/.test(frac)) frac = frac.replace(/0$/, "…"); // shown truncation
+  const full = (v % base).toString().padStart(decimals, "0");
+  let frac = full.slice(0, shown);
+  if (/[1-9]/.test(full.slice(shown))) frac += "…"; // digits were dropped: say so, never round silently
   return `${neg ? "-" : ""}${whole}${shown > 0 ? "." + frac : ""}`;
 }
 
-/** "0.100000 USDC" or "30,000,000.000000 1F916". Unknown assets are not formatted at all. */
+/** Drop trailing zeros from the fraction, keeping at least `minFrac` digits. A truncated figure ("…") is left alone. */
+function trimFrac(s, minFrac) {
+  const m = /^(-?[\d,]+)(?:\.(\d*))?$/.exec(s);
+  if (!m) return s;
+  const frac = (m[2] ?? "").replace(/0+$/, "").padEnd(minFrac, "0");
+  return frac ? `${m[1]}.${frac}` : m[1];
+}
+
+/** "0.10 USDC", "28,810.931619 USDC" or "30,000,000 1F916". Exact to the digits shown; unknown assets are not formatted. */
 export function formatAsset(atomic, tokenAddress) {
   const a = ASSETS[lc(tokenAddress)];
   if (!a || typeof atomic !== "bigint") return null;
-  return `${formatUnits(atomic, a.decimals, a.shown)} ${a.symbol}`;
+  return `${trimFrac(formatUnits(atomic, a.decimals, a.shown), a.symbol === "USDC" ? 2 : 0)} ${a.symbol}`;
 }
 
 export const assetOf = (tokenAddress) => ASSETS[lc(tokenAddress)] ?? null;
@@ -190,6 +199,10 @@ const NAMES = {
   0x0421: "CYRILLIC CAPITAL LETTER ES", 0x0441: "CYRILLIC SMALL LETTER ES", 0x0405: "CYRILLIC CAPITAL LETTER DZE",
   0x0415: "CYRILLIC CAPITAL LETTER IE", 0x0422: "CYRILLIC CAPITAL LETTER TE", 0x041d: "CYRILLIC CAPITAL LETTER EN",
   0x0395: "GREEK CAPITAL LETTER EPSILON", 0x03a4: "GREEK CAPITAL LETTER TAU", 0x0397: "GREEK CAPITAL LETTER ETA",
+  0x00da: "LATIN CAPITAL LETTER U WITH ACUTE", 0x00d9: "LATIN CAPITAL LETTER U WITH GRAVE", 0x00db: "LATIN CAPITAL LETTER U WITH CIRCUMFLEX",
+  0x00dc: "LATIN CAPITAL LETTER U WITH DIAERESIS", 0x0020: "SPACE", 0x0410: "CYRILLIC CAPITAL LETTER A", 0x0412: "CYRILLIC CAPITAL LETTER VE",
+  0x0406: "CYRILLIC CAPITAL LETTER BYELORUSSIAN-UKRAINIAN I", 0x0399: "GREEK CAPITAL LETTER IOTA", 0x0392: "GREEK CAPITAL LETTER BETA",
+  0x13a0: "CHEROKEE LETTER A", 0x13da: "CHEROKEE LETTER S", 0x216d: "ROMAN NUMERAL ONE HUNDRED", 0xff35: "FULLWIDTH LATIN CAPITAL LETTER U",
 };
 
 export const codepointLabel = (cp) => `U+${cp.toString(16).toUpperCase().padStart(4, "0")}${NAMES[cp] ? " " + NAMES[cp] : ""}`;
@@ -199,7 +212,9 @@ export const codepointLabel = (cp) => `U+${cp.toString(16).toUpperCase().padStar
  * textContent only; this never produces markup. Tabs and newlines pass through; long runs of combining marks
  * collapse to one token.
  */
-export function reveal(str, max = 400) {
+export function reveal(str, max = 400, { strict = false } = {}) {
+  // strict (token symbols): every character outside printable ASCII becomes a visible token, because in a symbol
+  // a Cyrillic С or an accented Ú is the forgery itself, not decoration.
   const s = String(str ?? "");
   const out = [];
   let buf = "";
@@ -215,7 +230,7 @@ export function reveal(str, max = 400) {
     if (/\p{M}/u.test(ch)) {
       if (++marks > 2) continue;
     } else marks = 0;
-    if (ch !== "\t" && ch !== "\n" && HIDDEN.test(ch)) {
+    if ((ch !== "\t" && ch !== "\n" && HIDDEN.test(ch)) || (strict && !/^[\x21-\x7e]$/.test(ch))) {
       if (buf) out.push({ text: buf });
       buf = "";
       out.push({ hidden: codepointLabel(cp) });
@@ -246,9 +261,11 @@ const CONFUSABLE = {
 
 /** Fold a token symbol to what a hurried reader would see: NFKC, hidden characters dropped, lookalikes mapped. */
 export function foldSymbol(sym) {
-  let s = String(sym ?? "").normalize("NFKC");
+  // Decompose first so accents come off ("ÚSDС" → "USDС"), drop every combining mark and hidden character, map
+  // the lookalike letters, then recompose full-width forms.
+  let s = String(sym ?? "").normalize("NFKD").replace(/\p{M}/gu, "");
   s = [...s].filter((ch) => !HIDDEN.test(ch)).map((ch) => CONFUSABLE[ch] ?? ch).join("");
-  return s.toUpperCase();
+  return s.normalize("NFKC").toUpperCase();
 }
 
 /** A token that is not ours but reads as one of ours. Canonical is decided by address only, never by name. */
