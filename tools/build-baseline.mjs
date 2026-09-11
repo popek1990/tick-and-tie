@@ -14,8 +14,9 @@
 // Anyone can rerun this file and diff the output.
 //
 // Usage: node tools/build-baseline.mjs [--from 49500000] [--to <block>] [--out docs/data/baseline.json]
+//        node tools/build-baseline.mjs --reuse docs/data/baseline.json   (same blocks and logs; re-read balances only)
 
-import { writeFileSync } from "node:fs";
+import { readFileSync, writeFileSync } from "node:fs";
 
 const args = process.argv.slice(2);
 const arg = (k, d) => (args.includes(k) ? args[args.indexOf(k) + 1] : d);
@@ -74,16 +75,22 @@ async function main() {
   const list = [...wallets.keys()];
   console.error(`watching ${list.length} wallets: ${list.join(", ")}`);
 
+  // --reuse: keep an earlier run's blocks and logs (the walk is ~30 min) and re-read only the balances.
+  const reuse = arg("--reuse", null) ? JSON.parse(readFileSync(arg("--reuse"), "utf8")) : null;
+  if (reuse && (reuse.kind !== "tick-and-tie.baseline.v1" || reuse.from_block !== FROM_BLOCK)) throw new Error("--reuse: not a v1 baseline from the same start block");
+  if (reuse && !list.every((w) => reuse.wallets[w])) throw new Error("--reuse: the rail names a wallet the earlier walk did not watch; walk again");
   const fin = await rpc(NODE, "eth_getBlockByNumber", ["finalized", false]);
-  const toBlock = Number(arg("--to", String(Number(BigInt(fin.number)))));
+  const toBlock = reuse ? reuse.to_block : Number(arg("--to", String(Number(BigInt(fin.number)))));
   const toHeader = await rpc(NODE, "eth_getBlockByNumber", [hex(toBlock), false]);
+  if (reuse && toHeader.hash !== reuse.to_block_hash) throw new Error("--reuse: block hash at to_block changed");
   const fromHeader = await rpc(NODE, "eth_getBlockByNumber", [hex(FROM_BLOCK), false]);
 
   const seen = new Map();
+  for (const l of reuse?.logs ?? []) seen.set(`${l.tx}:${l.log_index}`, l);
   const topicsList = list.map(topic);
   const windows = Math.ceil((toBlock - FROM_BLOCK + 1) / WINDOW);
   let w = 0;
-  for (let a = FROM_BLOCK; a <= toBlock; a += WINDOW) {
+  for (let a = FROM_BLOCK; !reuse && a <= toBlock; a += WINDOW) {
     const b = Math.min(a + WINDOW - 1, toBlock);
     for (const topics of [[TRANSFER, topicsList], [TRANSFER, null, topicsList]]) {
       const logs = await rpc(NODE, "eth_getLogs", [{ address: TOKENS, fromBlock: hex(a), toBlock: hex(b), topics }]);
@@ -107,9 +114,21 @@ async function main() {
   }
   const logs = [...seen.values()].sort((x, y) => x.block - y.block || x.log_index - y.log_index);
 
-  // Balances at both ends, at two nodes, and the footing per wallet and token.
-  const balanceAt = async (url, token, wallet, block) =>
-    BigInt(await rpc(url, "eth_call", [{ to: token, data: "0x70a08231" + wallet.slice(2).padStart(64, "0") }, hex(block)])).toString();
+  // Balances at both ends, at two nodes, and the footing per wallet and token. A token with no contract code at a
+  // block (1F916 did not exist yet at FROM_BLOCK) has a balance of 0 there by definition; that is recorded as
+  // "0" only when the same node answers eth_getCode with "0x" at that block, and the reason is kept in no_code.
+  const noCode = {};
+  const codeAt = async (url, token, block) => {
+    const k = `${url} ${token} ${block}`;
+    if (!(k in noCode)) noCode[k] = (await rpc(url, "eth_getCode", [token, hex(block)])) === "0x";
+    return !noCode[k];
+  };
+  const balanceAt = async (url, token, wallet, block) => {
+    if (!(await codeAt(url, token, block))) return "0";
+    const r = await rpc(url, "eth_call", [{ to: token, data: "0x70a08231" + wallet.slice(2).padStart(64, "0") }, hex(block)]);
+    if (!/^0x[0-9a-fA-F]{64}$/.test(r)) throw new Error(`balanceOf answered ${String(r).slice(0, 20)}`);
+    return BigInt(r).toString();
+  };
   const balances = {};
   const footing = {};
   for (const wallet of list) {
@@ -119,14 +138,16 @@ async function main() {
       const start = {};
       const end = {};
       for (const url of CHECK_NODES) {
-        try {
-          start[new URL(url).host] = await balanceAt(url, token, wallet, FROM_BLOCK);
-          end[new URL(url).host] = await balanceAt(url, token, wallet, toBlock);
-        } catch (e) {
-          start[new URL(url).host] ??= null;
-          end[new URL(url).host] ??= null;
+        const host = new URL(url).host;
+        for (const [into, block] of [[start, FROM_BLOCK], [end, toBlock]]) {
+          try {
+            into[host] = await balanceAt(url, token, wallet, block);
+          } catch (e) {
+            into[host] = null;
+            console.error(`not read: ${host} ${token} ${wallet} @${block}: ${e.message}`);
+          }
+          await sleep(300);
         }
-        await sleep(300);
       }
       balances[wallet][token] = { at_from_block: start, at_to_block: end };
       let inflow = 0n;
@@ -136,12 +157,17 @@ async function main() {
         if (l.to === wallet) inflow += BigInt(l.value);
         if (l.from === wallet) outflow += BigInt(l.value);
       }
-      const s = Object.values(start).find((v) => v !== null);
-      const e = Object.values(end).find((v) => v !== null);
+      // Both nodes must answer and agree at each end, or the footing is not read (null), never guessed.
+      const agreed = (m) => {
+        const v = Object.values(m);
+        return v.length === CHECK_NODES.length && v.every((x) => x !== null && x === v[0]) ? v[0] : null;
+      };
+      const s = agreed(start);
+      const e = agreed(end);
       footing[wallet][token] = {
         in: inflow.toString(),
         out: outflow.toString(),
-        foots: s != null && e != null ? BigInt(s) + inflow - outflow === BigInt(e) : null,
+        foots: s !== null && e !== null ? BigInt(s) + inflow - outflow === BigInt(e) : null,
       };
     }
   }
@@ -149,6 +175,7 @@ async function main() {
   const out = {
     kind: "tick-and-tie.baseline.v1",
     built_at: new Date().toISOString(),
+    logs_walked_at: reuse ? (reuse.logs_walked_at ?? reuse.built_at) : new Date().toISOString(),
     built_by: "tools/build-baseline.mjs (rerun it and diff)",
     method: `eth_getLogs at ${new URL(NODE).host}, topic0 Transfer, from-or-to any watched wallet, tokens USDC/1F916/WETH, windows of ${WINDOW} blocks; balances by eth_call balanceOf at ${CHECK_NODES.map((u) => new URL(u).host).join(" and ")}`,
     from_block: FROM_BLOCK,
@@ -158,7 +185,13 @@ async function main() {
     to_block_time: new Date(Number(BigInt(toHeader.timestamp)) * 1000).toISOString(),
     wallets: Object.fromEntries(wallets),
     tokens: TOKENS,
-    rpc_calls: calls,
+    rpc_calls: calls + (reuse?.rpc_calls ?? 0),
+    no_code: Object.entries(noCode)
+      .filter(([, empty]) => empty)
+      .map(([k]) => {
+        const [url, token, block] = k.split(" ");
+        return { node: new URL(url).host, token, block: Number(block), note: "eth_getCode answered 0x: no contract here yet, so the balance is 0" };
+      }),
     limits: [
       "Completeness is shown by footing: start balance + logs in − logs out = end balance, per wallet and token. An inflow and an outflow of the same size that are both missing would still foot.",
       "Only ERC-20 Transfer logs of the three canonical tokens are here. Native ETH, other tokens and approvals are not.",
