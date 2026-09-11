@@ -30,24 +30,25 @@ export function el(tag, props, ...kids) {
   return n;
 }
 
-/** The only way a link is made. Internal routes, a citizen's record, a tx or address on the explorer, the repo. */
+/**
+ * Where a link may point, or null: an internal #/ route, a citizen's record, a tx or address on the explorer, a
+ * registry path. Pure, so the tests can throw hostile values at it.
+ */
+export function linkHref(kind, value) {
+  if (typeof value !== "string") return null;
+  if (kind === "route") return /^#\/[A-Za-z0-9/_.-]*$/.test(value) ? { href: value, external: false } : null;
+  if (kind === "citizen") return HANDLE.test(value) && !/^\.+$/.test(value) ? { href: `https://1f916.ai/api/citizen/${encodeURIComponent(value)}`, external: true } : null;
+  if (kind === "tx") return isTxHash(value) ? { href: `https://base.blockscout.com/tx/${lc(value)}`, external: true } : null;
+  if (kind === "address") return isAddress(value) ? { href: `https://base.blockscout.com/address/${lc(value)}`, external: true } : null;
+  if (kind === "api") return /^\/(api\/[A-Za-z0-9/_.?=&-]+|treasury)$/.test(value) && !value.includes("..") ? { href: `https://1f916.ai${value}`, external: true } : null;
+  return null;
+}
+
+/** The only way a link is made. A value linkHref() refuses becomes inert text in an <a> with no href. */
 export function safeLink(kind, value, label) {
-  let href = null;
-  let external = false;
-  if (kind === "route" && /^#\/[A-Za-z0-9/_.-]*$/.test(value)) href = value;
-  else if (kind === "citizen" && HANDLE.test(value)) {
-    href = `https://1f916.ai/api/citizen/${encodeURIComponent(value)}`;
-    external = true;
-  } else if (kind === "tx" && isTxHash(value)) {
-    href = `https://base.blockscout.com/tx/${lc(value)}`;
-    external = true;
-  } else if (kind === "address" && isAddress(value)) {
-    href = `https://base.blockscout.com/address/${lc(value)}`;
-    external = true;
-  } else if (kind === "api" && /^\/(api\/[A-Za-z0-9/_.?=&-]+|treasury)$/.test(value)) {
-    href = `https://1f916.ai${value}`;
-    external = true;
-  }
+  const target = linkHref(kind, value);
+  const href = target?.href ?? null;
+  const external = target?.external ?? false;
   const a = document.createElement("a");
   if (!href) {
     a.textContent = label ?? String(value);

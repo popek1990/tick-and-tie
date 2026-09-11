@@ -3,24 +3,17 @@
 // a button. Nothing is stored in the browser: the tape and every reading live in memory for this visit only.
 
 import * as net from "./net.js";
-import { selfTest } from "./abi.js";
-import { heads, tieTransfer, STATE } from "./chain.js";
-import { verifyCheckpoint, verifyLedgerRoot, verifyEvent, verifyConsistency, NotSupported, ed25519Verify } from "./crypto.js";
-import { scheduleA } from "./checks/receipts.js";
-import { scheduleC } from "./checks/observer.js";
-import { scheduleL, checkRoute, OUR_HANDLE } from "./checks/l23.js";
-import { scheduleF } from "./checks/clocks.js";
-import { scheduleG } from "./checks/forgeries.js";
-import { scheduleD, TREASURY, PAYOUT_WALLET } from "./checks/books.js";
-import { census, LEVELS } from "./checks/census.js";
-import { today } from "./checks/today.js";
+import { tieTransfer, STATE } from "./chain.js";
+import { verifyCheckpoint, verifyLedgerRoot, verifyEvent, verifyConsistency, ed25519Verify } from "./crypto.js";
+import { checkRoute } from "./checks/l23.js";
+import { LEVELS } from "./checks/census.js";
+import { newRun, runAll, controls, flipHex, summary } from "./run.js";
 import * as ui from "./ui.js";
 import { el, safeLink, bdi, glyph, table } from "./ui.js";
-import { isoMin, isoSec, fromMs, fromSec, groupInt, formatAsset, parseAtomic, short, lc, isLookalike, USDC } from "./codec.js";
+import { isoMin, fromSec, groupInt, formatAsset, short } from "./codec.js";
 
-const ctx = { docs: {}, minFinal: null, headRef: null, baseline: null, readAt: null, registryKey: null };
-const results = { A: null, C: null, L: null, F: null, G: null, D: null, census: null, today: null, controls: null };
-const problems = [];
+const run = newRun();
+const { ctx, results, problems } = run;
 let knownHandles = new Set();
 
 const $ = (id) => document.getElementById(id);
@@ -29,154 +22,13 @@ function status(text) {
   if (s) s.textContent = text;
 }
 
-// ---- loading ----------------------------------------------------------------------------------------------
-
-const detailCache = new Map();
-ctx.listingDetail = (id) => {
-  if (!detailCache.has(id)) detailCache.set(id, net.registry(`/api/listings/${id}`));
-  return detailCache.get(id);
-};
-
-async function boot() {
-  const bad = selfTest();
-  if (bad.length) problems.push(`keccak self-test failed for ${bad.join(", ")}: those calls are disabled`);
-  status("Reading the registry (GET) …");
-  const [rail, checkpoint, receiptEvents, treasury, official, listing23] = await Promise.all([
-    net.registry("/api/rail"),
-    net.registry("/api/checkpoint"),
-    net.registry("/api/events?kind=payout-receipt"),
-    net.registry("/treasury"),
-    net.registry("/api/official"),
-    ctx.listingDetail(23),
-  ]);
-  for (const [name, r] of Object.entries({ rail, checkpoint, receiptEvents, treasury, official, listing23 })) {
-    if (r.ok) ctx.docs[name] = r.json;
-    else problems.push(`GET ${name}: not read (${r.error})`);
-  }
-  ctx.readAt = isoSec(fromMs(rail.json?.now) ?? new Date());
-  ctx.docs.listing23Now = listing23.json?.now;
-  ctx.registryKey = checkpoint.json?.registry_public_key?.x ?? null;
-  const offTreasury = lc(official.json?.treasury?.address);
-  if (offTreasury && offTreasury !== TREASURY) problems.push(`the treasury address this page watches (${short(TREASURY)}) differs from GET /api/official (${short(offTreasury)}): check before trusting schedule D`);
-
-  status("Reading Base: the finalized head at three nodes …");
-  const h = await heads();
-  ctx.minFinal = h.minFinal;
-  ctx.heads = h;
-  ctx.headRef = h.per.base?.number ? h.per.base : h.per.drpc?.number ? h.per.drpc : null;
-  if (!ctx.minFinal) problems.push("no archive node answered the finalized head: chain lines below read as not read");
-  const [b, bi] = await Promise.all(["data/baseline.json", "data/bindings.json"].map((f) => net.local(f).catch((e) => ({ ok: false, error: String(e.message) }))));
-  if (b.ok && b.json?.kind === "tick-and-tie.baseline.v1") ctx.baseline = b.json;
-  else problems.push(`data/baseline.json: not read (${b.error ?? "unexpected kind"})`);
-  if (bi.ok && bi.json?.kind === "tick-and-tie.bindings.v1") ctx.bindingsIndex = bi.json;
-  else problems.push(`data/bindings.json: not read (${bi.error ?? "unexpected kind"}); schedule C reads every listing live`);
-  render();
-
-  // The schedules run side by side where they do not depend on each other: each door has its own pacing, so
-  // this changes the wall time, not the load on any server. A comes before C (C needs A's receipts) and before
-  // G (G needs A's payees); L comes before F (F needs L's clocks).
-  const running = new Set();
-  const showRunning = () => status(running.size ? `Checking ${[...running].sort().join(", ")} …` : "Finishing …");
-  const run = async (key, fn) => {
-    running.add(key);
-    showRunning();
-    try {
-      results[key] = await fn();
-    } catch (e) {
-      problems.push(`schedule ${key} stopped: ${e?.message ?? e}`);
-      results[key] = [];
-    }
-    running.delete(key);
-    showRunning();
-    render();
-  };
-  await run("L", async () => scheduleL(ctx));
-  const pA = run("A", () => scheduleA(ctx));
-  const pC = pA.then(() => run("C", () => scheduleC(ctx)));
-  const pF = run("F", () => scheduleF(ctx));
-  const pD = run("D", () => scheduleD(ctx));
-  const pG = pA.then(() => run("G", () => forgeries()));
-  await Promise.all([pC, pF]);
-  try {
-    results.today = await today(ctx, { cLines: results.C ?? [], fLines: results.F ?? [], lLines: results.L ?? [] });
-  } catch (e) {
-    problems.push(`today: ${e?.message ?? e}`);
-    results.today = [];
-  }
-  render();
-  try {
-    results.census = await census(ctx);
+/** Called whenever a result lands: the census names the handles that may become links, then the view redraws. */
+function onUpdate() {
+  if (results.census?.dots && knownHandles.size === 0) {
     knownHandles = new Set(results.census.dots.map((d) => d.handle));
     ui.setKnownHandles(knownHandles);
-  } catch (e) {
-    problems.push(`census stopped: ${e?.message ?? e}`);
   }
-  await Promise.all([pD, pG]);
-  results.controls = await controls();
   render();
-  const spent = net.spent();
-  const failedControls = results.controls.filter((c) => !c.pass).length;
-  status(`Read at ${ctx.readAt} · ${spent.registry} registry GETs · ${spent.rpc} Base reads · ${spent.indexer} indexer GETs · controls: ${results.controls.length - failedControls}/${results.controls.length} corrupted copies failed, as they must${problems.length ? ` · ${problems.length} problem${problems.length === 1 ? "" : "s"} (see Legend)` : ""}.`);
-}
-
-/** Schedule G's inputs: the society's wallets, plus every payee address A tied and every route on listing 23. */
-async function forgeries() {
-  const wallets = [
-    { address: TREASURY, label: "the treasury" },
-    { address: PAYOUT_WALLET, label: "the society's payout wallet" },
-    ...(ctx.docs.rail?.observer?.marks ?? []).filter((m) => ![TREASURY, PAYOUT_WALLET].includes(lc(m.funder_address))).map((m) => ({ address: lc(m.funder_address), label: `funder wallet ${short(m.funder_address)}` })),
-  ];
-  const payees = [];
-  for (const l of results.A ?? []) if (l.extra?.claim?.to) payees.push({ address: l.extra.claim.to, label: `${l.handles[0]}'s payout address` });
-  for (const bnd of ctx.docs.listing23?.bindings ?? []) payees.push({ address: bnd.payout_address, label: `${bnd.handle}'s route on listing 23` });
-  const g = await scheduleG(ctx, wallets, payees);
-  results.Gnotes = g.notes;
-  return g.lines;
-}
-
-// ---- negative controls: every green here must be able to go red ------------------------------------------
-
-function flipHex(s, i = 5) {
-  const c = s[i];
-  const n = c === "0" ? "1" : c === "a" ? "b" : c === "A" ? "B" : c === "-" ? "_" : "0";
-  return s.slice(0, i) + n + s.slice(i + 1);
-}
-
-async function controls() {
-  const out = [];
-  const add = (name, expected, got) => out.push({ name, expected, got: String(got), pass: String(got) === String(expected) });
-  const cps = ctx.docs.checkpoint?.checkpoints ?? [];
-  const idCp = cps.find((c) => c.log === "identity_events");
-  const ledgerCp = cps.find((c) => c.log === "ledger");
-  try {
-    if (idCp && ctx.registryKey) {
-      add("identity checkpoint, as served", true, await verifyCheckpoint(ctx.registryKey, "identity_events", idCp));
-      add("identity checkpoint, one signature character changed", false, await verifyCheckpoint(ctx.registryKey, "identity_events", { ...idCp, sig: flipHex(idCp.sig) }));
-      add("identity checkpoint, tree size + 1", false, await verifyCheckpoint(ctx.registryKey, "identity_events", { ...idCp, tree_size: idCp.tree_size + 1 }));
-    }
-    if (ledgerCp && ctx.docs.treasury) {
-      const rows = ctx.docs.treasury.entries ?? [];
-      const sealed = rows.filter((r) => r.hash);
-      const target = sealed[Math.floor(sealed.length / 2)];
-      const tampered = rows.map((r) => (r === target ? { ...r, amount_cents: r.amount_cents + 1 } : r));
-      add("books fold, as served", true, (await verifyLedgerRoot(ctx.registryKey, rows, ledgerCp)).ok);
-      add(`books fold, row ${target?.id} amount + 1 cent`, false, (await verifyLedgerRoot(ctx.registryKey, tampered, ledgerCp)).ok);
-    }
-    const a = (results.A ?? []).find((l) => l.state === STATE.TIED && l.extra?.claim);
-    if (a && ctx.samples?.receipts) {
-      const claim = a.extra.claim;
-      add(`${a.ref} tie, as served`, STATE.TIED, tieTransfer(claim, ctx.samples.receipts, ctx.minFinal).state);
-      add(`${a.ref} tie, amount + 1 atomic unit`, STATE.BROKEN, tieTransfer({ ...claim, value: claim.value + 1n }, ctx.samples.receipts, ctx.minFinal).state);
-      add(`${a.ref} tie, wrong token`, STATE.BROKEN, tieTransfer({ ...claim, token: "0x9e00fc92493451eba1c63dd3880d68b622037ba3" }, ctx.samples.receipts, ctx.minFinal).state);
-      add(`${a.ref} tie, log index + 1`, STATE.BROKEN, tieTransfer({ ...claim, logIndex: claim.logIndex + 1 }, ctx.samples.receipts, ctx.minFinal).state);
-    }
-    add("lookalike: a real poisoning pair", true, isLookalike("0x4B010DeaCd6aA30D6674b0624ad5aAD935B44D28", "0x4b086F5Df2a15394a3b2FD83Db90764F25134d28"));
-    add("lookalike: an address against itself", false, isLookalike("0x4B010DeaCd6aA30D6674b0624ad5aAD935B44D28", "0x4b010deacd6aa30d6674b0624ad5aad935b44d28"));
-  } catch (e) {
-    if (e instanceof NotSupported) add("Ed25519 in this browser", "available", "not available: signature lines read as not read");
-    else add("controls", "ran", `stopped: ${e?.message ?? e}`);
-  }
-  return out;
 }
 
 // ---- views ------------------------------------------------------------------------------------------------
@@ -429,7 +281,7 @@ function viewLegend() {
       el("li", { text: `One network module (js/net.js) holds the only fetch() call. 1f916.ai, Blockscout and GitHub are read with GET only. The only POSTs are JSON-RPC reads to Base nodes, with these methods and no others: ${net.RPC_METHODS.join(", ")}. eth_call may target only USDC, 1F916 and WETH, with a read selector. The society's own /human/economy reads Base the same way.` }),
       el("li", { text: "Moving money needs a signature. This page holds no key, never asks for one, never touches a wallet object, and refuses any call outside the list above before a byte leaves your browser." }),
       el("li", { text: `The Content-Security-Policy of this page: ${csp}` }),
-      el("li", { text: "Run node scripts/check-readonly.mjs from the source: it proves the above from the files, and its --self-test plants 20 violations it must catch." }),
+      el("li", { text: "Run node scripts/check-readonly.mjs from the source: it proves the above from the files, and its --self-test plants known violations in a copy and must catch every one." }),
       el("li", { text: "Break a check yourself: in devtools, tickTie.controls() re-runs every negative control below, and tickTie.flip(tickTie.samples().checkpoint, 'sig') gives you a corrupted copy to feed tickTie.verifyCheckpoint." })
     )
   );
@@ -537,7 +389,7 @@ window.tickTie = Object.freeze({
   verifyConsistency,
   ed25519Verify,
   tieTransfer,
-  controls: async () => (results.controls = await controls()),
+  controls: async () => (results.controls = await controls(run)),
   samples: () => structuredClone({ checkpoint: (ctx.docs.checkpoint?.checkpoints ?? [])[0] ?? null, registryKey: ctx.registryKey, books: ctx.docs.treasury?.entries ?? [], ledgerCheckpoint: (ctx.docs.checkpoint?.checkpoints ?? []).find((c) => c.log === "ledger") ?? null }),
   /** A corrupted COPY: flips one character of a string field, or adds 1 to a number. The page's state is untouched. */
   flip(obj, field, index = 5) {
@@ -550,8 +402,10 @@ window.tickTie = Object.freeze({
   },
 });
 
-boot().catch((e) => {
-  problems.push(`stopped: ${e?.message ?? e}`);
-  status(`Stopped: ${e?.message ?? e}. Nothing below is guessed.`);
-  render();
-});
+runAll(run, { status, onUpdate })
+  .then(() => status(summary(run)))
+  .catch((e) => {
+    problems.push(`stopped: ${e?.message ?? e}`);
+    status(`Stopped: ${e?.message ?? e}. Nothing below is guessed.`);
+    render();
+  });

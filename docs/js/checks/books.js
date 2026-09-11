@@ -15,7 +15,7 @@
 // and bubbles walked these outflows first, in posts.
 
 import { indexer } from "../net.js";
-import { verifyLedgerRoot } from "../crypto.js";
+import { verifyLedgerRoot, NotSupported } from "../crypto.js";
 import { balancesAt, tieBalance, agreedValue, receiptsAt, readTransfer, decide, STATE } from "../chain.js";
 import { centsToUsdcAtomic, formatAsset, lc, short, isoMin, parseAtomic, groupInt, decodeTransfer, USDC, TOKEN, WETH, ASSETS } from "../codec.js";
 import { blockTime } from "./observer.js";
@@ -87,16 +87,24 @@ export async function scheduleD(ctx) {
     })
   );
 
-  // D-2 the books fold
-  const root = await verifyLedgerRoot(ctx.registryKey, t.entries ?? [], cpLedger);
+  // D-2 the books fold. A missing checkpoint or a browser without Ed25519 is "not read", never a break.
+  let root;
+  let unreadWhy = null;
+  if (!cpLedger || !ctx.registryKey) unreadWhy = "not read: GET /api/checkpoint did not give a ledger checkpoint and key on this read";
+  try {
+    root = await verifyLedgerRoot(ctx.registryKey, t.entries ?? [], cpLedger);
+  } catch (e) {
+    root = { ok: false, steps: { rows_rehash: 0, rows: (t.entries ?? []).filter((r) => r.hash).length, links: false, root: false, signature: false } };
+    unreadWhy = e instanceof NotSupported ? "not read in this browser: no Ed25519 in WebCrypto" : `not read: ${e?.message ?? e}`;
+  }
   lines.push(
     line({
       ref: "D-2",
       schedule: "D",
       route: "#/d/2",
-      state: root.ok ? STATE.TIED : STATE.BROKEN,
-      mark: root.ok ? "✓" : "✗",
-      why: root.ok ? "every sealed row rehashes and links, the root folds, the registry key signed it" : "a step failed; see the steps",
+      state: unreadWhy ? STATE.UNREAD : root.ok ? STATE.TIED : STATE.BROKEN,
+      mark: unreadWhy ? "?" : root.ok ? "✓" : "✗",
+      why: unreadWhy ?? (root.ok ? "every sealed row rehashes and links, the root folds, the registry key signed it" : "a step failed; see the steps"),
       title: "the sealed rows fold to the signed ledger root",
       sealed: root.ok,
       sentence: [`${root.steps.rows_rehash} of ${root.steps.rows} sealed rows rehash from their own fields and fold to the ledger root the registry key signed (checkpoint ${cpLedger?.id ?? "?"}, tree ${cpLedger?.tree_size ?? "?"}). ${(t.entries ?? []).filter((e) => !e.hash).length} older rows were written before sealing began.`],
@@ -111,23 +119,47 @@ export async function scheduleD(ctx) {
     })
   );
 
-  // D-3 onchain_cents
-  const cents = Number(t.onchain_cents);
-  const d3 = tieBalance(usdcNow.perNode, centsToUsdcAtomic(cents), { tolerance: 9999n });
-  lines.push(
-    line({
-      ref: "D-3",
-      schedule: "D",
-      route: "#/d/3",
-      state: d3.state,
-      mark: d3.mark,
-      why: d3.why,
-      title: "onchain_cents against the wallet",
-      sentence: [`The books' onchain_cents reads ${groupInt(cents)} (${(cents / 100).toFixed(2)} USDC); the wallet holds ${now !== null ? formatAsset(now, USDC) : "not read"}. The books round to cents.`],
-      says: [{ label: "books", value: `onchain_cents ${t.onchain_cents}, onchain_is_stale ${t.onchain_is_stale}, checked ${t.onchain_checked_at}`, source: "GET /treasury", readAt }],
-      notVerified: ["which block the registry read: it does not say, so a transfer between its read and ours can move the numbers apart"],
-    })
-  );
+  // D-3 onchain_cents. When the registry's own read of the wallet fails it serves onchain_cents: null and says so
+  // in assets.errors ("USDC balanceOf did not answer"). A null is not a zero, and a figure the books mark stale is
+  // not a reading of now: either one is compared with nothing, and the line says the registry could not read.
+  const usdcErr = (Array.isArray(t.assets?.errors) ? t.assets.errors : []).find((e) => /USDC/.test(String(e))) ?? null;
+  const centsKnown = t.onchain_cents !== null && t.onchain_cents !== undefined && Number.isSafeInteger(Number(t.onchain_cents)) && t.onchain_checked_at != null;
+  const says3 = [{ label: "books", value: `onchain_cents ${t.onchain_cents}, onchain_is_stale ${t.onchain_is_stale}, checked ${t.onchain_checked_at}${usdcErr ? `; assets.errors: “${usdcErr}”` : ""}`, source: "GET /treasury", readAt }];
+  if (!centsKnown || usdcErr || t.onchain_is_stale === true) {
+    lines.push(
+      line({
+        ref: "D-3",
+        schedule: "D",
+        route: "#/d/3",
+        state: STATE.BLIND,
+        why: !centsKnown ? "the books carry no reading of the wallet on this request (onchain_cents is null)" : usdcErr ? "the books say their own USDC read failed on this request" : "the books mark their own figure stale",
+        title: "onchain_cents against the wallet",
+        sentence: [`The books could not read their own wallet on this request${usdcErr ? ` (they say: “${usdcErr}”)` : ""}, so there is no figure to tie${centsKnown ? ` (onchain_cents ${groupInt(Number(t.onchain_cents))}${t.onchain_is_stale ? ", marked stale" : ""})` : ""}. This page read the wallet at two nodes: ${now !== null ? formatAsset(now, USDC) : "not read"} (D-1).`],
+        says: says3,
+        notVerified: ["why the registry's read failed: it does not say beyond the error it prints"],
+      })
+    );
+  } else {
+    const cents = Number(t.onchain_cents);
+    let d3 = tieBalance(usdcNow.perNode, centsToUsdcAtomic(cents), { tolerance: 9999n });
+    // The books do not say which block they read, and this page reads behind finality: a transfer between the two
+    // reads would part them honestly. So a difference here is reported, never called a break.
+    if (d3.state === STATE.BROKEN) d3 = { state: STATE.UNREAD, mark: "?", why: "the books and the wallet differ beyond a cent; the books do not say which block they read, so a transfer between the two reads could explain it" };
+    lines.push(
+      line({
+        ref: "D-3",
+        schedule: "D",
+        route: "#/d/3",
+        state: d3.state,
+        mark: d3.mark,
+        why: d3.why,
+        title: "onchain_cents against the wallet",
+        sentence: [`The books' onchain_cents reads ${groupInt(cents)} (${(cents / 100).toFixed(2)} USDC); the wallet holds ${now !== null ? formatAsset(now, USDC) : "not read"}. The books round to cents.`],
+        says: says3,
+        notVerified: ["which block the registry read: it does not say, so a transfer between its read and ours can move the numbers apart"],
+      })
+    );
+  }
   if (Array.isArray(t.assets?.errors) && t.assets.errors.length) {
     lines.push(
       line({
@@ -236,15 +268,20 @@ export async function scheduleD(ctx) {
     }
     const foots = recordedStart !== null && recordedEnd !== null && recordedStart + inflow - outflow === recordedEnd;
     const endNow = agreedValue(atEnd.perNode);
+    // The live stretch after the baseline: true = it foots, false = it does not, null = it was not checked. Only
+    // "nothing to check" (the baseline reaches min(finalized)) or a stretch that foots can leave the line tied.
+    const liveNeeded = ctx.minFinal > base.to_block;
     const liveFoots = endNow !== null && now !== null && liveOk ? endNow + liveIn - liveOut === now : null;
+    if (liveNeeded && liveFoots === null) liveNotes.push(`the ${groupInt(ctx.minFinal - base.to_block)} blocks after the baseline were not footed: ${endNow === null || now === null ? "a balance was not read at two nodes" : "the indexer's list did not cover them"}`);
     const ok = foots && tieStart.state === STATE.TIED && tieEnd.state === STATE.TIED;
+    const liveGood = !liveNeeded || liveFoots === true;
     lines.push(
       line({
         ref: "D-5",
         schedule: "D",
         route: "#/d/5",
-        state: ok ? (liveFoots === false ? STATE.UNREAD : STATE.TIED) : tieStart.state === STATE.UNREAD || tieEnd.state === STATE.UNREAD ? STATE.UNREAD : STATE.BROKEN,
-        why: ok ? (liveFoots === false ? "the baseline foots; the live stretch does not foot on the indexer's list" : "start + in − out = end, and both ends tie at two nodes") : `${tieStart.why}; ${tieEnd.why}`,
+        state: ok ? (liveGood ? STATE.TIED : STATE.UNREAD) : tieStart.state === STATE.UNREAD || tieEnd.state === STATE.UNREAD ? STATE.UNREAD : STATE.BROKEN,
+        why: ok ? (liveGood ? "start + in − out = end, both ends tie at two nodes, and the blocks since foot too" : liveFoots === false ? "the baseline foots; the live stretch does not foot on the indexer's list" : "the baseline foots; the live stretch after it was not footed on this read") : `${tieStart.why}; ${tieEnd.why}`,
         title: "the footing: the treasury's USDC flows add up to its balance",
         sentence: [
           `Start ${recordedStart !== null ? formatAsset(recordedStart, USDC) : "?"} + in ${formatAsset(inflow, USDC)} − out ${formatAsset(outflow, USDC)} = ${recordedStart !== null ? formatAsset(recordedStart + inflow - outflow, USDC) : "?"}; the wallet held ${recordedEnd !== null ? formatAsset(recordedEnd, USDC) : "?"} at block ${groupInt(base.to_block)}. ${foots ? "It foots." : "It does not foot."}${liveFoots === null ? "" : liveFoots ? ` The ${groupInt(ctx.minFinal - base.to_block)} blocks since also foot.` : ` The ${groupInt(ctx.minFinal - base.to_block)} blocks since do not foot on the indexer's list.`}`,
@@ -254,7 +291,7 @@ export async function scheduleD(ctx) {
           ...Object.entries(atEnd.perNode).map(([node, v]) => ({ node: `${node} @${base.to_block}`, text: v.notRead ?? String(v.value) })),
         ],
         says: [{ label: "baseline", value: `${base.logs.length} logs, built ${base.built_at}, blocks ${base.from_block}–${base.to_block}, ${base.method}`, source: "data/baseline.json (rebuild: node tools/build-baseline.mjs)" }],
-        notVerified: base.limits ?? [],
+        notVerified: [...(base.limits ?? []), ...liveNotes],
       })
     );
   }

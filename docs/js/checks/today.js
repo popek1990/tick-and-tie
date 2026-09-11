@@ -21,6 +21,7 @@ export async function today(ctx, { cLines, fLines, lLines }) {
     const hi = Math.max(...days);
     const span = lo === hi ? `${lo} days` : `${lo} to ${hi} days`;
     const unseen = (ctx.observerPayments ?? []).length;
+    const who = new Set((ctx.observerPayments ?? []).flatMap((p) => (p.match?.bindings ?? []).map((b) => b.handle))).size;
     items.push({
       key: "observer",
       ref: "C",
@@ -30,7 +31,10 @@ export async function today(ctx, { cLines, fLines, lLines }) {
         `Its next question (eth_getLogs over ${groupInt(KEYED_RANGE)} blocks from ${short(m.funder_address)}), asked here just now:`,
         ...Object.entries(r.wide).map(([node, s]) => `${node}: ${s}`),
         `${r.wideAnswered} of ${Object.keys(r.wide).length} public nodes answer at that width, and the observer needs two to agree. Over 1,000 blocks: ${Object.entries(r.narrow).map(([n, s]) => `${n} ${s}`).join("; ")}.`,
-        unseen ? `Meanwhile Base shows ${unseen} payment${unseen === 1 ? "" : "s"} to bound addresses that the rail does not (schedule C).` : "",
+        /-32614|2,000 range/.test(r.wide.base ?? "")
+          ? "Why, from the source: src/observer.ts asks 10,000 blocks per cycle when a keyed endpoint is configured (OBSERVER_BLOCKS_PER_CYCLE_KEYED); its comment says Infura and mainnet.base.org both accepted that width when measured on 2026-09-08. mainnet.base.org now caps eth_getLogs at 2,000 (its answer above), so the keyed voice has no second voice to agree with, which is what “no two providers agreed (1 answered)” on each mark says."
+          : "From the source: src/observer.ts asks 10,000 blocks per cycle when a keyed endpoint is configured (OBSERVER_BLOCKS_PER_CYCLE_KEYED). The answers above show which public nodes accept that width from here, today.",
+        unseen ? `Meanwhile Base shows ${unseen} payment${unseen === 1 ? "" : "s"} from these wallets to addresses ${who} citizen${who === 1 ? "" : "s"} bound, tied at two nodes, that the rail does not record (schedule C).` : "",
       ].filter(Boolean),
       notVerified: "what the observer's keyed endpoint answers, and whether Cloudflare's egress sees the same limits as this browser: not read",
       replay: r,

@@ -5,6 +5,8 @@
   "license": "MIT",
   "scripts": {
     "test": "node --test test/*.test.mjs",
-    "check": "node scripts/check-readonly.mjs"
+    "check": "node scripts/check-readonly.mjs",
+    "smoke": "node test/smoke.mjs --fixtures",
+    "smoke:live": "node test/smoke.mjs --live"
   }
 }

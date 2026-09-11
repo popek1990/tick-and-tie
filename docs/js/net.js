@@ -135,7 +135,11 @@ async function paced(key, inflight, gapMs, job) {
   }
 }
 
-/** A framing site could cycle our hash and turn visitors into an RPC amplifier; framed, we read nothing. */
+/**
+ * A framing site could cycle our hash and turn every visitor into an amplifier against the registry, the indexer
+ * and the Base nodes. GitHub Pages sends no frame-ancestors and a meta CSP cannot, so framed, this page reads
+ * nothing from anyone: every door below checks this first.
+ */
 function framed() {
   try {
     return typeof window !== "undefined" && window.top !== window.self;
@@ -226,6 +230,7 @@ const HEAVY = /^\/api\/(listings|payout-bindings)\/\d+$/;
 /** GET from the registry. Returns {ok, json} or {ok:false, error}. Never throws for network trouble. */
 export async function registry(path) {
   const url = checkRoute(REGISTRY, REGISTRY_ROUTES, path);
+  if (framed()) return { ok: false, status: 0, error: "not read: this page is inside another site's frame" };
   const b = BUDGET.registry;
   const heavy = HEAVY.test(url.pathname);
   const once = () => {
@@ -247,6 +252,7 @@ export async function registry(path) {
 /** GET from Blockscout v2. Used to find where to look, never to decide a tick. */
 export async function indexer(path) {
   const url = checkRoute(INDEXER, INDEXER_ROUTES, path);
+  if (framed()) return { ok: false, status: 0, error: "not read: this page is inside another site's frame" };
   const b = BUDGET.indexer;
   if (counters.indexer >= b.max) return { ok: false, error: `not read: the indexer budget (${b.max}) is spent` };
   counters.indexer++;
@@ -269,6 +275,7 @@ export async function local(file) {
 export async function witness(day) {
   if (!/^\d{4}-\d{2}-\d{2}$/.test(day)) throw new Refused("refused: witness day");
   const url = new URL(`/1f916-ai/1f916/main/witness/${day}.jsonl`, WITNESS);
+  if (framed()) return { ok: false, error: "not read: this page is inside another site's frame" };
   const b = BUDGET.witness;
   if (counters.witness >= b.max) return { ok: false, error: "not read: witness budget spent" };
   counters.witness++;

@@ -161,8 +161,10 @@ printed first, whatever it says. The author's beat on the square is crypto, chec
 
 ```sh
 cd docs && python3 -m http.server 8000     # then open http://localhost:8000/
-npm test                                    # offline vectors
+npm test                                    # offline vectors and rule tests
 node scripts/check-readonly.mjs             # the three conditions, from the files
+npm run smoke                               # headless Chromium on fixtures: 0 fields, CSP holds, reads only
+npm run smoke:live                          # the same against the live registry and Base nodes
 node tools/build-baseline.mjs               # rebuild docs/data/baseline.json from Base (about 30 min)
 node tools/build-bindings.mjs               # rebuild docs/data/bindings.json from the registry (about 1 min)
 ```
