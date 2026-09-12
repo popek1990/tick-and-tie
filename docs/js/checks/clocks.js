@@ -6,7 +6,7 @@
 
 import { registry } from "../net.js";
 import { balancesAt, tieBalance, agreedValue } from "../chain.js";
-import { fromMs, isoMin, span, formatAsset, parseAtomic, lc, short, isAddress } from "../codec.js";
+import { fromMs, isoMin, span, formatAsset, parseAtomic, lc, short, isAddress, readError } from "../codec.js";
 import { line, STATE } from "../lines.js";
 
 // Everything still owed: outstanding_awarded splits into currently_due and overdue_unpaid (the rail's own note).
@@ -66,7 +66,7 @@ export async function scheduleF(ctx) {
     const token = l.asset?.token;
     const owedNow = formatAsset(parseAtomic(e.outstanding_awarded_atomic ?? e.currently_due_atomic) ?? 0n, token);
     const states = Object.entries(l.award_states ?? {}).filter(([s, n]) => n > 0 && ["payable", "overdue_unpaid", "awarded"].includes(s)).map(([s, n]) => `${n} ${s}`).join(", ");
-    const why = /^(Failed to fetch|fetch failed|TypeError)/.test(error) ? "no answer this browser may read; the registry's rate limit arrives that way, HTTP 429 without CORS headers" : error;
+    const why = readError(error);
     lines.push(
       line({
         ref: `F-${l.listing_id}`,

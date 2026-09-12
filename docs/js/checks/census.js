@@ -13,6 +13,7 @@
 
 import { registry } from "../net.js";
 import { STATE } from "../chain.js";
+import { groupInt, readError } from "../codec.js";
 
 export const LEVELS = Object.freeze([
   Object.freeze({ key: "none", label: "registered, no money trail" }),
@@ -72,6 +73,28 @@ export function censusOf({ citizens, submissions, bindings, observerPayments = [
   };
 }
 
+/**
+ * The one census sentence, from the summary alone: pure, and the only copy, so the page and the terminal say the
+ * same thing. Two different reads can make a count a lower bound, and they hedge different halves of it:
+ *   - the citizen list read in part → every count here is a lower bound, because censusOf() counts only citizens
+ *     that were actually read (it filters by the list);
+ *   - an event list read in part → "handed in work" and "filed a payout route" are lower bounds, and nothing else.
+ * A partial read is never stated as a whole number, and the sentence names what was not read.
+ */
+export function censusHeadline(s) {
+  const partial = !s.complete;
+  const ev = partial || !s.eventsComplete ? "at least " : "";
+  const list = partial ? "at least " : "";
+  const lead = partial
+    ? `Of ${groupInt(s.total)} citizens, ${groupInt(s.read)} were read on this visit, so these counts are lower bounds: `
+    : `Of ${groupInt(s.total)} citizens, `;
+  const paid = s.unseenCitizens
+    ? ` Base shows ${groupInt(s.unseenCitizens)} more paid with no receipt for that payment (schedule C); ${list}${groupInt(s.paidUnseen)} of them hold no receipt at all.`
+    : "";
+  const rest = partial && s.total > s.read ? ` The other ${groupInt(s.total - s.read)} were not read: ${readError(s.notReadWhy)}.` : "";
+  return `${lead}${ev}${groupInt(s.handed)} handed in work and ${ev}${groupInt(s.routed)} filed a payout route; ${list}${groupInt(s.receipted)} hold a receipt that ties on both ledgers.${paid}${rest}`;
+}
+
 /** The census's own reads (the citizen list and two event lists). Started early; census() waits for schedule C. */
 export async function readCensusInputs() {
   const [cit, subs, binds] = await Promise.all([allCitizens(), registry("/api/events?kind=listing-submission"), registry("/api/events?kind=payout-binding")]);
@@ -94,6 +117,7 @@ export async function census(ctx, inputs = null) {
     total: cit.total ?? c.dots.length,
     read: c.dots.length,
     complete: cit.complete,
+    notReadWhy: cit.error ?? null,
     ...c.counts,
     submissionsRead: subs.ok,
     bindingsRead: binds.ok,

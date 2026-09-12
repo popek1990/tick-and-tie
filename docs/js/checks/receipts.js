@@ -14,7 +14,7 @@ import { registry, witness } from "../net.js";
 import { sha256Hex, verifyEvent, verifyCheckpoint, verifyConsistency, NotSupported } from "../crypto.js";
 import { receiptsAt, tieTransfer, STATE } from "../chain.js";
 import { parseAtomic, formatAsset, lc, isTxHash, fromMs, isoMin, groupInt } from "../codec.js";
-import { line } from "../lines.js";
+import { line, MARK } from "../lines.js";
 
 /** The first checkpoint of `log` in a witness day file (JSON lines), with the time the witness recorded it. */
 export function firstWitnessed(text, log = "identity_events") {
@@ -187,8 +187,14 @@ export async function receiptLine({ event, proof, binding, receipts, minFinal, r
     ref: `A-${d.binding}`,
     schedule: "A",
     state,
-    mark: state === STATE.TIED ? "✓" : tie.mark,
-    why: state === STATE.UNREAD && tie.state === STATE.TIED ? "Base ties, the society-log half did not verify" : tie.why,
+    // The tie's own mark carries ½ (one answer) and ≠ (nodes disagree), so keep it while the state is the tie's.
+    // Once the state is demoted because the society-log half did not hold, the mark follows the state: a ✓ from
+    // Base alone must never sit on a line this page calls not read.
+    mark: state === tie.state ? tie.mark : MARK[state],
+    why:
+      state === STATE.UNREAD && tie.state === STATE.TIED
+        ? `Base ties at two nodes; ${proof ? "the society-log half did not verify (see THE SOCIETY'S LOG below)" : "the society's log half was not read: its Merkle proof did not load"}`
+        : tie.why,
     title: `binding ${d.binding} · ${d.docket} · ${handle}`,
     handles: [handle],
     sentence: [{ handle }, ` was paid ${amount} on ${d.docket} (${paidAt ? isoMin(paidAt) : "time not read"}).`],

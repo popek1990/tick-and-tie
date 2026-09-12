@@ -294,3 +294,10 @@ export function counterfeitOf(tokenAddress, symbol) {
 
 /** Defang a URL from citizen text so it stays inert: "https://evil.example/x" → "https[:]//evil[.]example/x". */
 export const defang = (url) => String(url ?? "").replace(/:\/\//g, "[:]//").replace(/\./g, "[.]");
+
+/**
+ * A fetch failure in words a reader can act on. The registry's rate limit arrives as an opaque network error, not a
+ * status: HTTP 429 without CORS headers, which the browser refuses to show the page. Anything else is passed
+ * through as the door reported it. One copy, so every schedule names the same thing the same way.
+ */
+export const readError = (error) => (/^(Failed to fetch|fetch failed|TypeError|NetworkError|Load failed)/.test(String(error ?? "")) ? "no answer this browser may read; the registry's rate limit arrives that way, HTTP 429 without CORS headers" : String(error ?? "not read"));

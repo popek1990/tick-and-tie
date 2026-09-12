@@ -6,7 +6,7 @@ import * as net from "./net.js";
 import { tieTransfer, STATE } from "./chain.js";
 import { verifyCheckpoint, verifyLedgerRoot, verifyEvent, verifyConsistency, ed25519Verify } from "./crypto.js";
 import { checkRoute } from "./checks/l23.js";
-import { LEVELS } from "./checks/census.js";
+import { LEVELS, censusHeadline } from "./checks/census.js";
 import { newRun, runAll, controls, flipHex, summary } from "./run.js";
 import * as ui from "./ui.js";
 import { el, safeLink, bdi, glyph, table } from "./ui.js";
@@ -88,12 +88,6 @@ function viewToday() {
     wrap.append(sec);
   }
   return wrap;
-}
-
-function censusHeadline(s) {
-  const least = s.eventsComplete ? "" : "at least ";
-  const paid = s.unseenCitizens ? ` Base shows ${s.unseenCitizens} more paid with no receipt for that payment (schedule C); ${s.paidUnseen} of them hold no receipt at all.` : "";
-  return `Of ${groupInt(s.total)} citizens, ${least}${groupInt(s.handed)} handed in work and ${least}${groupInt(s.routed)} filed a payout route; ${s.receipted} hold a receipt that ties on both ledgers.${paid}`;
 }
 
 function railTotals(s) {

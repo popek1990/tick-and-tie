@@ -76,6 +76,24 @@ test("receipt line for binding 150 (event 6045): tied and sealed; corrupted copi
   const l3 = await receiptLine({ event, proof, binding: { ...binding, amount_atomic: "4000000" }, receipts, minFinal: MIN_FINAL, registryKey: KEY, readAt: "test" });
   assert.equal(l3.sealed, false);
   assert.notEqual(l3.state, STATE.TIED);
+  for (const bad of [l2, l3]) assert.notEqual(bad.mark, "✓", "a line that is not sealed cannot show a tick");
+});
+
+test("a ✓ from Base never survives a society-log half that was not read", async () => {
+  const event = events.find((e) => e.id === 6045);
+  const binding = fx("binding-150.json");
+  const args = { event, binding, receipts, minFinal: MIN_FINAL, registryKey: KEY, readAt: "test" };
+  // GET /api/proof refused (the registry's rate limit arrives as a network error): Base still ties at two nodes,
+  // but the society's log half was never read, so the line must say "not read" and must not tick.
+  const l = await receiptLine({ ...args, proof: null });
+  assert.equal(l.state, STATE.UNREAD, l.why);
+  assert.equal(l.mark, "?");
+  assert.notEqual(l.mark, "✓", "a line the page itself calls not read cannot show a tick");
+  assert.match(l.why, /Base ties at two nodes; the society's log half was not read/);
+  // The tie's own refinements must survive while the state is still the tie's: ◔ above finality, not a flat ?
+  const p = await receiptLine({ ...args, proof: fx("proof-6045.json"), minFinal: 1 });
+  assert.equal(p.state, STATE.PENDING);
+  assert.equal(p.mark, "◔", "½, ≠ and ◔ come from the tie and must not be flattened");
 });
 
 test("event 1258 (binding 1) also seals with its own proof", async () => {

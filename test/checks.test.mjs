@@ -3,9 +3,9 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { decide, tieBalance, agreedValue, STATE } from "../docs/js/chain.js";
-import { classifyTransfer, nextObserverCall, catchUp, cycleMinutesOf } from "../docs/js/checks/observer.js";
+import { classifyTransfer, nextObserverCall, catchUp, cycleMinutesOf, scheduleC } from "../docs/js/checks/observer.js";
 import { matchRow, onchainCentsLine, PAYOUT_WALLET } from "../docs/js/checks/books.js";
-import { censusOf } from "../docs/js/checks/census.js";
+import { censusOf, censusHeadline } from "../docs/js/checks/census.js";
 import { foldExhibits } from "../docs/js/checks/forgeries.js";
 import { firstWitnessed } from "../docs/js/checks/receipts.js";
 import { scheduleF } from "../docs/js/checks/clocks.js";
@@ -81,6 +81,39 @@ test("the census counts citizens, each from one source", () => {
   assert.equal(c.counts.unseenCitizens, 2);
   assert.equal(c.counts.paidUnseen, 1, "d holds a receipt, so only c is paid with no receipt at all");
   assert.equal(c.counts.receipted, 1);
+});
+
+test("C: a stretch of Base that was not read is never printed as 'no payment'", async () => {
+  const wallet = "0x" + "1".repeat(40);
+  const rail = { observer: { marks: [{ funder_address: wallet, last_block: 50_000_000 }], walk_note: "one funder wallet per five-minute cycle" }, listings: [] };
+  // No finalized head was read, so the wallet was never walked: an empty result means "not read", not "nothing".
+  const [l] = await scheduleC({ docs: { rail }, minFinal: null, readAt: "test" });
+  const said = l.sentence.join("");
+  assert.match(said, /did not read that stretch of Base, so it cannot say what moved there/);
+  assert.doesNotMatch(said, /no payment/, "absence is only absence when the walk happened");
+  assert.equal(l.state, STATE.UNREAD, l.why);
+  assert.notEqual(l.mark, "✓");
+});
+
+test("the census says 'at least' and names what it missed when the citizen list was read in part", () => {
+  const whole = { total: 2415, read: 2415, complete: true, eventsComplete: true, handed: 74, routed: 51, receipted: 9, paidUnseen: 7, unseenCitizens: 14, notReadWhy: null };
+  const s1 = censusHeadline(whole);
+  assert.match(s1, /^Of 2,415 citizens, 74 handed in work and 51 filed a payout route; 9 hold a receipt/);
+  assert.doesNotMatch(s1, /at least/, "a complete read needs no hedge");
+
+  // A later page of GET /api/citizens was refused (the registry's 429 arrives without CORS headers). censusOf()
+  // counts only the citizens it actually read, so every count is a lower bound and the sentence has to say so.
+  const part = { ...whole, read: 1000, complete: false, handed: 36, routed: 22, receipted: 6, paidUnseen: 6, notReadWhy: "Failed to fetch" };
+  const s2 = censusHeadline(part);
+  assert.match(s2, /1,000 were read on this visit, so these counts are lower bounds/);
+  assert.match(s2, /at least 36 handed in work and at least 22 filed a payout route; at least 6 hold a receipt/);
+  assert.match(s2, /at least 6 of them hold no receipt at all/);
+  assert.match(s2, /The other 1,415 were not read: no answer this browser may read/);
+  assert.doesNotMatch(s2, /citizens, 36 handed/, "a count over half the list is never stated as a whole number");
+
+  // An event list read in part hedges the two counts that come from events, and nothing else.
+  const ev = censusHeadline({ ...whole, eventsComplete: false });
+  assert.match(ev, /at least 74 handed in work and at least 51 filed a payout route; 9 hold a receipt/);
 });
 
 test("D-3: a null onchain_cents is not a reading, never a zero and never a break", () => {

@@ -151,10 +151,13 @@ async function outflowsFrom(ctx, wallet, afterBlock) {
     }
   } else notes.push("the committed baseline did not load, so only the indexer's newest transfers were read");
   const liveFrom = Math.max(afterBlock, base?.to_block ?? afterBlock);
-  if (ctx.minFinal && liveFrom < ctx.minFinal) {
+  const liveNeeded = !!(ctx.minFinal && liveFrom < ctx.minFinal);
+  let liveOk = !liveNeeded; // nothing after the baseline to read is not a failure to read it
+  if (liveNeeded) {
     const r = await indexerPages(`/api/v2/addresses/${wallet}/token-transfers?type=ERC-20&filter=from`, liveFrom, 3);
     if (!r.ok) notes.push(`the live stretch after block ${groupInt(liveFrom)}: not read (indexer: ${r.error})`);
     else if (!r.complete) notes.push(`the live stretch after block ${groupInt(liveFrom)}: the indexer's list did not reach back that far (${r.error}), so older transfers in it were not listed`);
+    else liveOk = true;
     for (const it of r.items) {
       const block = Number(it.block_number ?? 0);
       const token = lc(it.token?.address_hash ?? it.token?.address);
@@ -163,7 +166,10 @@ async function outflowsFrom(ctx, wallet, afterBlock) {
       take({ tx: lc(it.transaction_hash), logIndex: Number(it.log_index), token, from: wallet, to: lc(it.to?.hash), value, block, source: "indexer hint" });
     }
   }
-  return { found, zero, notes };
+  // The stretch counts as read only when every source that covers it answered: the committed baseline, and — when
+  // the stretch reaches past the baseline's last block — the indexer's list back to that block. Anything less and
+  // an empty result means "not read", never "nothing moved".
+  return { found, zero, notes, stretchRead: !!base && liveOk };
 }
 
 const fundersListings = (ctx, wallet) => (ctx.docs.rail?.listings ?? []).filter((l) => lc(l.funder_address) === wallet);
@@ -228,7 +234,7 @@ export async function scheduleC(ctx) {
     const behind = never || gap === null || gap > DAY_BLOCKS;
     const days = gap !== null ? Math.round((gap * BLOCK_SECONDS) / 86400) : null;
 
-    const { found, zero, notes } = ctx.minFinal ? await outflowsFrom(ctx, wallet, walkFrom - 1) : { found: [], zero: 0, notes: ["no finalized head was read, so this wallet was not walked"] };
+    const { found, zero, notes, stretchRead } = ctx.minFinal ? await outflowsFrom(ctx, wallet, walkFrom - 1) : { found: [], zero: 0, notes: ["no finalized head was read, so this wallet was not walked"], stretchRead: false };
     const { bindings, unread, live, indexed } = found.length ? await fundersBindings(ctx, wallet) : { bindings: [], unread: [], live: [], indexed: [] };
     if (unread.length) notes.push(`listing detail not read for listing${unread.length === 1 ? "" : "s"} ${unread.join(", ")}: a payment to a route there would be missed`);
     const receipts = found.length ? await receiptsAt(found.map((f) => f.tx)) : null;
@@ -271,11 +277,13 @@ export async function scheduleC(ctx) {
     else [state, why] = [STATE.TIED, "the observer is current, and the rail counts every payment this page finds before its mark"];
 
     const sentence = [];
-    if (never) sentence.push("The observer has never finished a read of this wallet (last_block is null). Since this funder's first listing, Base shows ");
-    else sentence.push(`The observer has read this wallet to block ${groupInt(mark.last_block)}${gap !== null ? `, ${groupInt(gap)} blocks behind finality` : ""}. ${behind ? "After that block" : "Since then"} Base shows `);
-    if (!afterTied.length) sentence.push("no payment by the registry's own rule, tied at two nodes.");
+    if (never) sentence.push("The observer has never finished a read of this wallet (last_block is null). Since this funder's first listing, ");
+    else sentence.push(`The observer has read this wallet to block ${groupInt(mark.last_block)}${gap !== null ? `, ${groupInt(gap)} blocks behind finality` : ""}. ${behind ? "After that block" : "Since then"} `);
+    // An empty walk is an absence only when the walk happened. Without a read stretch the page says so instead.
+    if (!stretchRead) sentence.push(`this page did not read that stretch of Base, so it cannot say what moved there: ${notes[0] ?? "no source answered"}.`);
+    else if (!afterTied.length) sentence.push("Base shows no payment by the registry's own rule, tied at two nodes.");
     else {
-      sentence.push(`${plural(afterTied.length, "payment")} by the registry's own rule, tied at two nodes`);
+      sentence.push(`Base shows ${plural(afterTied.length, "payment")} by the registry's own rule, tied at two nodes`);
       if (unseen.length) sentence.push(`: ${unseen.length} with no receipt, to ${plural(who.length, "citizen")} (`, ...handleParts(who), ")");
       if (afterReceipted.length) sentence.push(`${unseen.length ? "; " : ": "}${afterReceipted.length} with a receipt (schedule A)`);
       sentence.push(".");
