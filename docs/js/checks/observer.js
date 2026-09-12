@@ -265,7 +265,10 @@ export async function scheduleC(ctx) {
     ctx.observerPayments.push(...unseen.map((p) => ({ tx: p.tx, logIndex: p.logIndex, to: p.to, token: p.token, value: p.value, block: p.block, handle: p.cls.handle, listing: p.cls.listing, funder: wallet })));
     const fast = catchUp(gap, marks.length, cycleMinutes, KEYED_RANGE);
     const slow = catchUp(gap, marks.length, cycleMinutes, CAPPED_RANGE);
-    ctx.observerWallets.push({ wallet, never, gap, behind, unseen: unseen.length, fast, slow });
+    // railTotal and expectedTotal travel with the wallet so "Today" can state the healed case as a number the
+    // reader can check, rather than as the absence of a complaint: what the rail counts before this mark, against
+    // what this page finds before it.
+    ctx.observerWallets.push({ wallet, never, gap, behind, unseen: unseen.length, fast, slow, railTotal, expectedTotal, comparable: !!ctx.baseline && !unread.length });
 
     let state;
     let why;

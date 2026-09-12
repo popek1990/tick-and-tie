@@ -11,7 +11,7 @@ import { censusOf, censusHeadline, populationLine } from "../docs/js/checks/cens
 import { foldExhibits } from "../docs/js/checks/forgeries.js";
 import { firstWitnessed } from "../docs/js/checks/receipts.js";
 import { scheduleF } from "../docs/js/checks/clocks.js";
-import { observerWhy, RECORDED } from "../docs/js/checks/today.js";
+import { observerWhy, RECORDED, observerItem, todayItems } from "../docs/js/checks/today.js";
 import { linkHref, saysKind, el } from "../docs/js/ui.js";
 import { USDC, TOKEN, ranges, readError } from "../docs/js/codec.js";
 
@@ -167,6 +167,44 @@ test("the census does not turn an unread money half into a population of nobody"
   assert.match(said, /still being read \(schedules A and C\)/);
   assert.doesNotMatch(said, /hold a receipt/, "no receipt claim at all until A and C have run");
   assert.doesNotMatch(said, /null|NaN|undefined/);
+});
+
+test("a caught-up observer is a headline, not a silence", async () => {
+  // This path cannot be exercised against the live rail today: every mark is weeks behind. It runs only once the
+  // registry fixes the thing this page reported, which is exactly when the page must still have something to say.
+  const head = 51_200_000;
+  const marks = [
+    { funder_address: "0x" + "1".repeat(40), last_block: head - 100 },
+    { funder_address: "0x" + "2".repeat(40), last_block: head - 4_000 },
+  ];
+  const ctx = { docs: { rail: { observer: { marks, walk_note: "one funder wallet per five-minute cycle" }, listings: [] } }, finalHead: head, readAt: "test" };
+  const it = await observerItem(ctx);
+  assert.ok(it, "a current observer must still produce an item; returning null lost the page its own finding");
+  assert.equal(it.healed, true);
+  assert.match(it.head, /payment observer is current/);
+  assert.match(it.head, /watches 2 wallets/);
+  assert.match(it.head, /block 51,196,000/, "the furthest-behind mark is the one named");
+  assert.doesNotMatch(it.head, /behind finality\./, "it is not behind: that is the other item's sentence");
+
+  // Before schedule C lands there is no count to quote, and it says so rather than implying agreement.
+  const pending = todayItems({ ...ctx, observerPayments: null, observerWallets: [] }, { observer: it, cLines: null });
+  assert.match(pending[0].body.join(" "), /still comparing the rail's own counts/);
+
+  // With C landed and tying, the claim becomes a number the reader can check.
+  const cLines = [{ ref: "C-1", state: STATE.TIED }, { ref: "C-2", state: STATE.TIED }];
+  const wallets = [
+    { comparable: true, railTotal: 4, expectedTotal: 4 },
+    { comparable: true, railTotal: 3, expectedTotal: 2 },
+  ];
+  const agreed = todayItems({ ...ctx, observerPayments: [], observerWallets: wallets }, { observer: it, cLines });
+  const said = agreed[0].body.join(" ");
+  assert.match(said, /ties on all 2/);
+  assert.match(said, /finds 6 payments the rail must have counted, and the rail counts 7 on 2 wallets/);
+
+  // A wallet this page could not walk is not a wallet the rail agrees with, and the sentence must not claim it.
+  const blind = todayItems({ ...ctx, observerPayments: [], observerWallets: [{ comparable: false, railTotal: 9, expectedTotal: 0 }] }, { observer: it, cLines });
+  assert.match(blind[0].body.join(" "), /could not compare the rail's counts/);
+  assert.doesNotMatch(blind[0].body.join(" "), /\b9\b/, "an uncomparable wallet's count is never quoted as agreement");
 });
 
 test("the population line reads the same array the dot field draws, and hedges a partial list", () => {

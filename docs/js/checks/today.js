@@ -10,6 +10,7 @@
 
 import { replay, KEYED_RANGE, CAPPED_RANGE, catchUp, cycleMinutesOf, hoursText, BLOCK_SECONDS } from "./observer.js";
 import { groupInt, short, plural } from "../codec.js";
+import { STATE } from "../chain.js";
 
 const DAY_BLOCKS = 43_200; // one day at BLOCK_SECONDS
 
@@ -69,13 +70,37 @@ export function observerWhy(liveBase) {
   return out;
 }
 
-/** Item 1, with its replay: needs only GET /api/rail and the finalized head. Null when no mark is behind. */
+/**
+ * The healed state, printed as a headline instead of as a silence.
+ *
+ * This function exists because the alternative was returning null: the moment every mark caught up, the page's
+ * main finding vanished and Today fell through to the next rule, so the registry fixing the thing this page
+ * reported would have read as the page having nothing to say. Good news is news, and it is the one item here that
+ * can be checked the same way the complaint was: the block each mark has reached, and whether the rail's own count
+ * of observed payments matches what this page finds before that mark. The count arrives with schedule C; until
+ * then this says only what the marks themselves say.
+ */
+function currentItem(ctx, marks) {
+  const lowest = Math.min(...marks.map((m) => m.last_block));
+  const mins = Math.round(((ctx.finalHead - lowest) * BLOCK_SECONDS) / 60);
+  return {
+    key: "observer",
+    ref: "C",
+    route: "#/c",
+    healed: true,
+    head: `The registry's payment observer is current. It watches ${plural(marks.length, "wallet")} and has read every one of them to within a day of finality; the furthest behind sits at block ${groupInt(lowest)}, about ${groupInt(mins)} minutes off the finalized head this page read.`,
+    body: [],
+    notVerified: "what the observer's keyed endpoint answers, and whether Cloudflare's egress sees the same limits as this browser: not read",
+  };
+}
+
+/** Item 1, with its replay: needs only GET /api/rail and the finalized head. Null when the rail has no marks. */
 export async function observerItem(ctx) {
   const marks = ctx.docs.rail?.observer?.marks ?? [];
   if (!ctx.finalHead || !marks.length) return null;
   const never = marks.filter((m) => !Number.isInteger(m.last_block));
   const behind = marks.filter((m) => Number.isInteger(m.last_block) && ctx.finalHead - m.last_block > DAY_BLOCKS).sort((a, b) => b.last_block - a.last_block);
-  if (!behind.length && !never.length) return null;
+  if (!behind.length && !never.length) return currentItem(ctx, marks);
   const current = marks.length - behind.length - never.length;
   // Blocks → days assumes Base's 2-second block, so this is an estimate and says so, exactly as schedule C does.
   const days = behind.map((x) => Math.round(((ctx.finalHead - x.last_block) * BLOCK_SECONDS) / 86400));
@@ -119,7 +144,26 @@ export function todayItems(ctx, { observer, cLines, fLines, lLines }) {
   if (observer) {
     const it = { ...observer, body: [...observer.body] };
     const pays = ctx.observerPayments;
-    if (cLines && pays) {
+    if (observer.healed) {
+      // Current is a claim, not a relief, so it gets the same treatment the complaint got: a count, its source,
+      // and the schedule that produced it. Comparability comes per wallet from schedule C, because a wallet this
+      // page could not walk is not a wallet the rail agrees with.
+      const cl = (cLines ?? []).filter((l) => String(l.ref ?? "").startsWith("C-"));
+      const ws = (ctx.observerWallets ?? []).filter((w) => w.comparable);
+      if (!cl.length) it.body.push("Schedule C is still comparing the rail's own counts against this page's; the result lands below.");
+      else if (!ws.length) it.body.push("Schedule C could not compare the rail's counts on this read, so being current is all that is checked here; the reason is on its lines.");
+      else {
+        const tied = cl.filter((l) => l.state === STATE.TIED).length;
+        const railTotal = ws.reduce((s, w) => s + (w.railTotal ?? 0), 0);
+        const expectedTotal = ws.reduce((s, w) => s + (w.expectedTotal ?? 0), 0);
+        it.body.push(
+          tied === cl.length
+            ? `Schedule C ties on all ${cl.length}: before each mark this page finds ${plural(expectedTotal, "payment")} the rail must have counted, and the rail counts ${groupInt(railTotal)} on ${plural(ws.length, "wallet")}.`
+            : `Schedule C ties on ${tied} of ${cl.length}, and the rest say why on their own lines. Before the marks this page finds ${plural(expectedTotal, "payment")} the rail must have counted, against the rail's ${groupInt(railTotal)}.`
+        );
+      }
+      if (pays?.length) it.body.push(`Base still shows ${plural(pays.length, "payment")} after the marks with no receipt. That is not the observer's debt: a mark only promises what is behind it.`);
+    } else if (cLines && pays) {
       const who = new Set(pays.map((p) => p.handle)).size;
       if (pays.length) it.body.push(`Meanwhile Base shows ${plural(pays.length, "payment")} after the marks by the registry's own rule, tied at two nodes and with no receipt, to ${plural(who, "citizen")} (schedule C). The rail counts none of them yet.`);
     } else it.body.push("Schedule C is still walking these wallets; its count of payments after the marks lands below.");
