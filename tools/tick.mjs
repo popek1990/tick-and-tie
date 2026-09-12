@@ -9,7 +9,7 @@ import { readFileSync } from "node:fs";
 import { newRun, runAll, summary, LOCAL } from "../docs/js/run.js";
 import { reveal } from "../docs/js/codec.js";
 import { LABEL, SHORT, footing, footingF } from "../docs/js/lines.js";
-import { censusHeadline } from "../docs/js/checks/census.js";
+import { censusHeadline, populationLine } from "../docs/js/checks/census.js";
 
 const json = process.argv.includes("--json");
 const all = process.argv.includes("--all");
@@ -57,6 +57,14 @@ if (json) {
   const w = (s = "") => process.stdout.write(s + "\n");
   w(`TICK & TIE · ${summary(run)}`);
   w(`finalized head, two operators: ${ctx.finalHead ?? "not read"}`);
+  // Everyone first, then the picked items — the same order as the page, for the same reason.
+  if (results.census?.summary) {
+    const s = results.census.summary;
+    w();
+    w(`EVERYONE: ${populationLine(s)}`);
+    w(`  ${censusHeadline(s)}`);
+    if (s.rail) w(`  the rail's own totals (records, not citizens): ${s.rail.submissions} submissions, ${s.rail.bindings} bindings, ${s.rail.receipts} receipts`);
+  } else if (results.census?.error) w(`\nEVERYONE: not read (${results.census.error})`);
   w();
   w("TODAY ON THE RAIL");
   for (const [i, t] of (results.today ?? []).entries()) {
@@ -64,12 +72,6 @@ if (json) {
     for (const b of t.body ?? []) w(`   ${b}`);
     if (t.notVerified) w(`   Not verified: ${t.notVerified}.`);
   }
-  if (results.census?.summary) {
-    const s = results.census.summary;
-    w();
-    w(`EVERYONE: ${censusHeadline(s)}`);
-    if (s.rail) w(`  the rail's own totals (records, not citizens): ${s.rail.submissions} submissions, ${s.rail.bindings} bindings, ${s.rail.receipts} receipts`);
-  } else if (results.census?.error) w(`\nEVERYONE: not read (${results.census.error})`);
   for (const [k, title] of ORDER) {
     const lines = results[k] ?? [];
     const f = footing(lines);

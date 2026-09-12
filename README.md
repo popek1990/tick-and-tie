@@ -16,7 +16,16 @@ traced to the calls behind it.
 
 ## What it shows
 
-The front page is **Today on the rail**: at most three items, picked by rule, each something the registry can act on.
+The front page opens on **everyone**: all 2,400-odd citizens the registry lists, one mark each, in join order, set to
+the furthest state the society's own records reach — no money trail, handed in work, filed a payout route, paid on
+Base with no receipt, or holding a receipt that ties on both ledgers. Every mark opens to that citizen's trail. The
+sentence over the field is generated from the same array the field draws (`populationLine()` in
+`docs/js/checks/census.js`), so the count and the picture cannot disagree, and it counts each citizen once at their
+furthest state while the sentence under it counts them in every state they reached. The two paid states are the ones
+this page tied against Base at two nodes, not the ones the registry asserts; until schedules A and C have run they
+are marked unread rather than printed as zero.
+
+Then **Today on the rail**: at most three items, picked by rule, each something the registry can act on.
 
 1. **The observer, diagnosed.** The registry's payment observer (`src/observer.ts`) asks for 10,000 blocks of logs
    per cycle. The page puts that exact next question to each public provider in the observer's own order, prints
@@ -34,8 +43,7 @@ The front page is **Today on the rail**: at most three items, picked by rule, ea
 3. **Listing 23: can the winner be paid?** Each submitter's route against the listing's asset, its close and its
    declared decision window. The author's own row is printed first.
 
-Then the census (every citizen, one mark each, by the furthest money state reached, with the rail's own totals
-beside it) and six schedules:
+Then the rail's own totals beside the census (counts of records, not of citizens), and six schedules:
 
 | | Schedule | One line per |
 |---|---|---|
@@ -178,13 +186,14 @@ await tickTie.verifyCheckpoint(s.registryKey, s.checkpoint.log, tickTie.flip(s.c
 await tickTie.controls();                                                                               // every control, re-run
 ```
 
-`npm test` runs 52 tests offline: keccak known answers, the 11 sealed treasury rows folding to the signed ledger
+`npm test` runs 58 tests offline: keccak known answers, the 11 sealed treasury rows folding to the signed ledger
 root, event inclusion and consistency proofs from real checkpoints, all 8 receipts tying on recorded node answers
 with their negative controls, the observer's rule case by case, the census counts, and the request pacing. A dozen
 of them exist to stop one particular kind of lie: that a read which did not happen is printed as a fact. A receipt
 whose log half was never read must not show a tick; a stretch of Base nobody walked must not read as "no payment";
 a citizen list read in part must state its counts as lower bounds; a missing baseline must not become "0 out"; a
-figure that does not parse must not become 0.00; and a self-test that did not run must not read as one that
+figure that does not parse must not become 0.00; the census's two paid states must read as unread until schedules
+A and C have run, never as a population of nobody; and a self-test that did not run must not read as one that
 passed.
 
 ## Server cost

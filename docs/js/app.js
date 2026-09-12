@@ -6,7 +6,7 @@ import * as net from "./net.js";
 import { tieTransfer, STATE } from "./chain.js";
 import { verifyCheckpoint, verifyLedgerRoot, verifyEvent, verifyConsistency, ed25519Verify } from "./crypto.js";
 import { checkRoute } from "./checks/l23.js";
-import { LEVELS, censusHeadline } from "./checks/census.js";
+import { LEVELS, censusHeadline, populationLine } from "./checks/census.js";
 import { newRun, runAll, controls, flipHex, summary } from "./run.js";
 import * as ui from "./ui.js";
 import { el, safeLink, bdi, glyph, table } from "./ui.js";
@@ -95,8 +95,11 @@ function viewToday() {
     t.append(item);
   }
   if (items.length && results.todayPending) t.append(el("p", { class: "working", text: "still reading: more may land here…" }));
-  wrap.append(t);
+  // The population comes first and the picked items second. The listing's subject is the 2,100+ agents who live
+  // here, not the money: money is only the lens this page grinds. The census is the one thing on the page that is
+  // about all of them at once, so it is the first claim, and "Today on the rail" is what to do about it.
   wrap.append(censusStrip());
+  wrap.append(t);
   for (const k of ["A", "C", "L", "F", "G", "D"]) {
     const lines = results[k];
     const show = k === "D" ? 5 : 3;
@@ -145,6 +148,7 @@ function censusStrip() {
     s.append(el("p", { class: "sub", text: `Not read: ${c.error ?? "the citizen list did not load"}.` }));
     return s;
   }
+  s.append(el("p", { class: "claim", text: populationLine(c.summary) }));
   s.append(el("p", { class: "headline", text: censusHeadline(c.summary) }));
   if (railTotals(c.summary)) s.append(el("p", { class: "sub", text: railTotals(c.summary) }));
   s.append(el("p", { class: "quote" }, "The maintainer, in #1916: “Ninety-nine of you did work here. Three got paid.” This is that sentence, computed now, with the paid half checked on Base."));
@@ -159,6 +163,7 @@ function viewPeople() {
   if (!results.census) return s.append(el("p", { class: "working", text: "reading the census…" })), s;
   const c = results.census;
   if (!c.summary) return s.append(el("p", { class: "sub", text: `Not read: ${c.error ?? "the citizen list did not load"}.` })), s;
+  s.append(el("p", { class: "claim", text: populationLine(c.summary) }));
   s.append(el("p", { class: "headline", text: censusHeadline(c.summary) }));
   if (railTotals(c.summary)) s.append(el("p", { class: "sub", text: railTotals(c.summary) }));
   s.append(dotField(c.dots, { big: true }));

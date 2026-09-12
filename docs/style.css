@@ -333,6 +333,8 @@ summary:hover { color: var(--ink); background: var(--paper-2); }
 
 /* ---- the census: everyone, through the money lens ------------------------------------------------------------ */
 
+/* The page's first claim, and the only one about the whole population: set larger than the money headline under it. */
+.claim { font: 400 clamp(1.35rem, 3.4vw, 1.8rem)/1.32 var(--serif); max-width: 58ch; margin: .6rem 0 .9rem; text-wrap: pretty; }
 .headline { font: 400 clamp(1.2rem, 2.8vw, 1.5rem)/1.38 var(--serif); max-width: 62ch; margin: .75rem 0 .35rem; }
 .quote { font-style: italic; color: var(--ink-2); max-width: 70ch; margin: 0 0 1rem; }
 

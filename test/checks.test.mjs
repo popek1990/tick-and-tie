@@ -7,7 +7,7 @@ import { footingF } from "../docs/js/lines.js";
 import { summary } from "../docs/js/run.js";
 import { classifyTransfer, nextObserverCall, catchUp, cycleMinutesOf, scheduleC } from "../docs/js/checks/observer.js";
 import { matchRow, onchainCentsLine, PAYOUT_WALLET, scheduleD } from "../docs/js/checks/books.js";
-import { censusOf, censusHeadline } from "../docs/js/checks/census.js";
+import { censusOf, censusHeadline, populationLine } from "../docs/js/checks/census.js";
 import { foldExhibits } from "../docs/js/checks/forgeries.js";
 import { firstWitnessed } from "../docs/js/checks/receipts.js";
 import { scheduleF } from "../docs/js/checks/clocks.js";
@@ -141,6 +141,57 @@ test("the census says 'at least' and names what it missed when the citizen list 
   // An event list read in part hedges the two counts that come from events, and nothing else.
   const ev = censusHeadline({ ...whole, eventsComplete: false });
   assert.match(ev, /at least 74 handed in work and at least 51 filed a payout route; 9 hold a receipt/);
+});
+
+test("the census does not turn an unread money half into a population of nobody", () => {
+  const citizens = ["a", "b", "c", "d"].map((h, i) => ({ handle: h, citizen_id: i + 1, created_at: i }));
+  const args = { citizens, submissions: [{ citizen: "a" }, { citizen: "b" }], bindings: [{ citizen: "b" }] };
+  // The early pass: schedules A and C have not run, so their inputs are null rather than empty.
+  const early = censusOf({ ...args, observerPayments: null, receiptLines: null });
+  assert.equal(early.moneyRead, false);
+  assert.equal(early.counts.receipted, null, "a schedule that has not run has no count, not a count of zero");
+  assert.equal(early.counts.paidUnseen, null);
+  assert.equal(early.counts.unseenCitizens, null);
+  assert.deepEqual(early.byLevel, [2, 1, 1, 0, 0], "nobody sits at the two paid states while they are unread");
+  assert.equal(early.byLevel.reduce((a, b) => a + b, 0), citizens.length, "every citizen read carries exactly one mark");
+
+  // The full pass over the same citizens, with the money half read: the same people, further along.
+  const full = censusOf({ ...args, observerPayments: [{ handle: "c" }, { handle: "d" }], receiptLines: [{ state: STATE.TIED, handles: ["d"] }] });
+  assert.equal(full.moneyRead, true);
+  assert.deepEqual(full.byLevel, [0, 1, 1, 1, 1]);
+  assert.equal(full.counts.receipted, 1);
+
+  // The headline must say the money half is unread, and must never print the receipt count as a number.
+  const s = { total: 4, read: 4, complete: true, eventsComplete: true, handed: 2, routed: 1, ...early.counts, moneyRead: false, byLevel: early.byLevel };
+  const said = censusHeadline(s);
+  assert.match(said, /still being read \(schedules A and C\)/);
+  assert.doesNotMatch(said, /hold a receipt/, "no receipt claim at all until A and C have run");
+  assert.doesNotMatch(said, /null|NaN|undefined/);
+});
+
+test("the population line reads the same array the dot field draws, and hedges a partial list", () => {
+  const s = { total: 2425, read: 2425, complete: true, moneyRead: true, byLevel: [2341, 23, 42, 10, 9] };
+  const line = populationLine(s);
+  assert.match(line, /^All 2,425 citizens the registry lists carry one mark here, in join order/);
+  assert.match(line, /2,341 with no money trail at all/);
+  assert.match(line, /9 holding a receipt that ties on both ledgers/);
+  assert.match(line, /tied against Base at two nodes, not ones the registry asserts/);
+  // These are levels: each citizen counted once, at the furthest state. The headline beside it counts each citizen
+  // in every state they reached, so without "no further than" the two sentences read as contradicting each other.
+  assert.match(line, /23 who got no further than handing in work/);
+  assert.match(line, /42 no further than a filed payout route/);
+  assert.equal(s.byLevel.reduce((a, b) => a + b, 0), s.read, "the levels partition the citizens that were read");
+
+  // Read in part: the claim of completeness has to go, and the numbers stay the ones actually counted.
+  const part = populationLine({ ...s, read: 1000, complete: false });
+  assert.match(part, /^1,000 of the 2,425 citizens the registry lists were read on this visit/);
+  assert.doesNotMatch(part, /^All /, "a list read in part is never claimed as all of it");
+
+  // Unread money half: the two paid states are absent from the sentence, not present as zeros.
+  const early = populationLine({ ...s, moneyRead: false, byLevel: [2401, 23, 1, 0, 0] });
+  assert.doesNotMatch(early, /paid on Base with no receipt at all/);
+  assert.doesNotMatch(early, /0 holding a receipt/);
+  assert.match(early, /still being read \(schedules A and C\), so no citizen is counted at them yet/);
 });
 
 test("D-3: a null onchain_cents is not a reading, never a zero and never a break", () => {

@@ -119,7 +119,21 @@ export async function runAll(run, { loadLocal = (f) => net.local(f), status = ()
   const pG = step("G", [pA, pL23], () => forgeries(run));
   const pD = step("D", [pTreasury, pLocal, pHeads, pCheckpoint], () => scheduleD(ctx));
   const pCensusIn = pRail.then(() => readCensusInputs());
-  const pCensus = Promise.all([pCensusIn, pC]).then(async ([inputs]) => {
+  // The population is the page's first claim, and it needs only the citizen list and the two event lists — not the
+  // money half, which waits on A and C at the end of the reading. So the census is computed twice from one set of
+  // reads: an early pass that puts the whole population on screen in seconds with the paid states marked unread,
+  // then the full pass that fills them in. No extra request: census() does no reads when it is handed its inputs.
+  const pCensusEarly = pCensusIn.then(async (inputs) => {
+    try {
+      results.census = await census(ctx, inputs, { money: false });
+    } catch (e) {
+      problems.push(`census stopped: ${e?.message ?? e}`);
+    }
+    onUpdate();
+  });
+  // pCensusEarly is a dependency, not just a sibling: without it the two passes race and the early one could land
+  // last, leaving the finished reading showing "still being read".
+  const pCensus = Promise.all([pCensusIn, pC, pCensusEarly]).then(async ([inputs]) => {
     try {
       results.census = await census(ctx, inputs);
     } catch (e) {
