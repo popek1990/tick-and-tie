@@ -40,6 +40,13 @@ import { join, relative, sep, extname, basename, dirname, resolve } from "node:p
 import { createHash, createPublicKey, verify as edVerify } from "node:crypto";
 import { tmpdir } from "node:os";
 import { pathToFileURL, fileURLToPath } from "node:url";
+import { setDefaultResultOrder } from "node:dns";
+
+// github.io publishes AAAA records. On a host with no IPv6 route, Node's happy-eyeballs picks one often enough
+// that --deployed reported "fetch failed" on a handful of files per run, which reads as a failed audit of the
+// published page when the bytes are in fact identical. Prefer A records; Node still falls back either way. This
+// changes how this script reaches the network and nothing about what it checks.
+setDefaultResultOrder("ipv4first");
 
 const SELF = fileURLToPath(import.meta.url);
 const realFetch = globalThis.fetch;
@@ -1563,19 +1570,38 @@ async function deployed(ctx, base) {
   const u = new URL(base.endsWith("/") ? base : base + "/");
   const files = ctx.files.filter((f) => !basename(f.rel).startsWith("."));
   let same = 0;
+  let retried = 0;
+  // A blip is not a mismatch. Ask up to three times for a thrown error or a status the CDN retries on, and
+  // count the retries in the summary, so a slow network cannot be mistaken for a page that fails its own audit.
+  // A 200 whose hash differs is an answer, not a blip: it is never retried.
+  const RETRY_STATUS = new Set([408, 425, 429, 500, 502, 503, 504]);
   for (const f of files) {
     const url = new URL(f.in.split("/").map(encodeURIComponent).join("/"), u).href;
-    try {
-      const res = await realFetch(url, { method: "GET", credentials: "omit", redirect: "error", referrerPolicy: "no-referrer", cache: "no-store" });
-      const got = sha256(Buffer.from(await res.arrayBuffer()));
-      if (res.status !== 200) F.push(fileHit(f.rel, `HTTP ${res.status} at ${url}`));
-      else if (got !== f.sha) F.push(fileHit(f.rel, `deployed ${short(got)} ≠ local ${short(f.sha)}`));
-      else same++;
-    } catch (e) {
-      F.push(fileHit(f.rel, `not read at ${url}: ${e.message}`));
+    let last = null;
+    for (let attempt = 0; attempt < 3; attempt++) {
+      if (attempt) {
+        retried++;
+        await new Promise((r) => setTimeout(r, 500 * 2 ** (attempt - 1)));
+      }
+      try {
+        const res = await realFetch(url, { method: "GET", credentials: "omit", redirect: "error", referrerPolicy: "no-referrer", cache: "no-store" });
+        const got = sha256(Buffer.from(await res.arrayBuffer()));
+        if (res.status === 200) {
+          if (got === f.sha) same++;
+          else F.push(fileHit(f.rel, `deployed ${short(got)} ≠ local ${short(f.sha)}`));
+          last = null;
+          break;
+        }
+        last = fileHit(f.rel, `HTTP ${res.status} at ${url}`);
+        if (!RETRY_STATUS.has(res.status)) break;
+      } catch (e) {
+        last = fileHit(f.rel, `not read at ${url}: ${e.message}`);
+      }
     }
+    if (last) F.push(last);
   }
-  return { cond: "D", ...result("D1", "deployed bytes", F, `${same}/${files.length} files at ${u.href} byte-identical to docs/ (GET only, no cookies; Pages may cache up to 10 min)`) };
+  const note = retried ? ` ${retried} request${retried === 1 ? "" : "s"} needed a retry` : "";
+  return { cond: "D", ...result("D1", "deployed bytes", F, `${same}/${files.length} files at ${u.href} byte-identical to docs/ (GET only, no cookies; Pages may cache up to 10 min).${note}`) };
 }
 
 // ---- the self-test: plant each violation in a temporary copy, and require the check that owns it to notice -------
