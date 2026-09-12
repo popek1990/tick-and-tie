@@ -121,6 +121,7 @@ function viewToday() {
   // here, not the money: money is only the lens this page grinds. The census is the one thing on the page that is
   // about all of them at once, so it is the first claim, and "Today on the rail" is what to do about it.
   wrap.append(censusStrip());
+  wrap.append(witnessBand());
   wrap.append(t);
   for (const k of ["A", "C", "L", "F", "G", "D"]) {
     const lines = results[k];
@@ -157,6 +158,28 @@ function dotField(dots, { big = false } = {}) {
 
 function levelKey() {
   return el("ul", { class: "levels" }, LEVELS.map((l, i) => el("li", null, el("span", { class: `dot l${i}` }), ` ${l.label}`)));
+}
+
+/**
+ * The log ticking with an outside witness on it, in its own band rather than as the first line inside schedule A.
+ *
+ * It was already here and already checked; what it was not, was findable. The check is the society's signed log
+ * against the copy GitHub's witness recorded, with an RFC 6962 consistency proof verified in this browser — and it
+ * sat under the label "A-log", where a reader had to already know what that meant. No new read and no new check:
+ * this renders the very same line object schedule A produces, through the same renderLine, so there is one copy of
+ * the reasoning and the two places can never drift.
+ */
+function witnessBand() {
+  const s = el("section", { class: "witness", "aria-labelledby": "h-witness" }, el("h2", { id: "h-witness" }, "The chain, ticking, with an outside witness on it"));
+  s.append(el("p", { class: "sub", text: "The society's own signed log, checked against the copy GitHub's witness recorded, by a proof this browser verifies. The registry's own how_to_verify asks for exactly this: compare roots there before believing its. Every receipt below hangs off this log, so it is checked first." }));
+  const line = (results.A ?? []).find((l) => l.ref === "A-log");
+  if (!line) {
+    const stopped = stoppedIn("A");
+    s.append(el("p", { class: stopped.length ? "nv" : "working", text: stopped.length ? `Not read: ${stopped.join("; ")}.` : "checking the log against GitHub's witness…" }));
+    return s;
+  }
+  s.append(ui.renderLine(line, { onOpen: (l) => openLine(l, results.A) }));
+  return s;
 }
 
 function censusStrip() {

@@ -23,7 +23,15 @@ sentence over the field is generated from the same array the field draws (`popul
 `docs/js/checks/census.js`), so the count and the picture cannot disagree, and it counts each citizen once at their
 furthest state while the sentence under it counts them in every state they reached. The two paid states are the ones
 this page tied against Base at two nodes, not the ones the registry asserts; until schedules A and C have run they
-are marked unread rather than printed as zero.
+are marked unread rather than printed as zero. The sentence is redrawn as each page of the citizen list lands
+rather than waiting for the last one, because the pages are 3.5 seconds apart on their own queue and a refusal
+costs eleven more: a partial list is stated as a lower bound with the gap named, never as the whole.
+
+Then **the chain, ticking, with an outside witness on it**: the society's own signed log checked against the copy
+GitHub's witness recorded, by an RFC 6962 consistency proof this browser verifies. The registry's own
+`how_to_verify` asks for exactly that — "Compare roots there before believing ours" — and every receipt further
+down hangs off this log, so it is checked before them. It is the same line schedule A produces, rendered in its own
+band because a reader should not have to know what "A-log" means to find it.
 
 Then **Today on the rail**: at most three items, picked by rule, each something the registry can act on.
 
@@ -186,7 +194,7 @@ await tickTie.verifyCheckpoint(s.registryKey, s.checkpoint.log, tickTie.flip(s.c
 await tickTie.controls();                                                                               // every control, re-run
 ```
 
-`npm test` runs 58 tests offline: keccak known answers, the 11 sealed treasury rows folding to the signed ledger
+`npm test` runs 61 tests offline: keccak known answers, the 11 sealed treasury rows folding to the signed ledger
 root, event inclusion and consistency proofs from real checkpoints, all 8 receipts tying on recorded node answers
 with their negative controls, the observer's rule case by case, the census counts, and the request pacing. A dozen
 of them exist to stop one particular kind of lie: that a read which did not happen is printed as a fact. A receipt
@@ -205,10 +213,12 @@ refuses bursts of them. So a day with more awards due is a slower, heavier read.
 queues, not one: a listing or binding record on one, the citizen list on the other, so the population line at the
 top of the page does not wait behind the detail reads. About 32 to 38 JSON-RPC reads go to
 Base nodes, paced per node with a budget and a circuit breaker; about 10 GETs go to Blockscout and one or two to
-GitHub (the witness day file). Timings of the published page, 2026-09-12 16:06Z: the first item of Today landed at
-2.4 seconds, the population line and its field of marks at 8.2 (three pages of the citizen list, 3.5 seconds
-apart), and the whole reading finished at 11.8, most of that spent waiting out the slow lanes. Before the two slow
-queues were split, the same page took 15.3 seconds and did not show the population line until 15.3. The
+GitHub (the witness day file). Timings, 2026-09-12: the first item of Today lands at about two seconds and the
+population line at about five, on a run where a page of the citizen list was refused and retried eleven seconds
+later. The whole reading finished between 11.8 and 18.5 seconds across runs that day, and the spread is the
+registry's throttle rather than the page: a run with no refusal spends 24 GETs, a run with one spends 25. Before
+the two slow queues were split and the census was drawn page by page, the published page took 15.3 seconds and did
+not show the population line until 15.3 — or 19.6 on a run that was refused once. The
 masthead prints the counts for the read you are looking at, and they are the numbers to trust over these. The tape
 (`#/tape`) lists every request the page made, with method, origin, path, status, bytes and time. Your browser's
 network panel is the independent check.

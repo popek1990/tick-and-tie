@@ -189,7 +189,7 @@ main { padding-block: 1.25rem 3rem; min-height: 60vh; }
 .more { font: 600 .78rem var(--mono); letter-spacing: .03em; margin: .8rem 0 0; }
 .more a, .tlink a { text-decoration-thickness: 1.5px; }
 
-section.today, section.census, section.schedule, section.page { margin: 0 0 2.75rem; }
+section.today, section.census, section.witness, section.schedule, section.page { margin: 0 0 2.75rem; }
 
 section > h2, .page > h2 {
   font: 700 clamp(1.4rem, 3.4vw, 1.9rem)/1.15 var(--serif);

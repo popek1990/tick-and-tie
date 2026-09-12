@@ -23,7 +23,7 @@ export const LEVELS = Object.freeze([
   Object.freeze({ key: "receipted", label: "holds a receipt, tied on both ledgers" }),
 ]);
 
-async function allCitizens() {
+async function allCitizens(onPage = null) {
   const rows = [];
   let since = null;
   let total = null;
@@ -32,7 +32,13 @@ async function allCitizens() {
     if (!r.ok) return { rows, total, complete: false, error: r.error };
     rows.push(...(r.json.citizens ?? []));
     total = r.json.total ?? total;
-    if (!r.json.has_more) return { rows, total, complete: true };
+    const done = !r.json.has_more;
+    // Hand over what has arrived so far. The pages are 3.5 s apart on their own slow queue and one refusal costs
+    // eleven more, so waiting for the last one to draw the first sentence means a reader who was throttled sees an
+    // empty section at the top of the page for twenty seconds. A partial list is not a problem here: every count
+    // censusOf() makes is over the citizens it actually read, and the sentence says "at least" and names the gap.
+    if (onPage) onPage({ rows: rows.slice(), total, complete: done });
+    if (done) return { rows, total, complete: true };
     since = r.json.next_since;
   }
   return { rows, total, complete: false, error: "stopped after 6 pages" };
@@ -148,10 +154,24 @@ export function censusHeadline(s) {
  * has landed: measured 2026-09-12, holding them cost the population line nothing and gave the whole reading back
  * about five seconds.
  */
-export async function readCensusInputs({ eventsAfter = null } = {}) {
-  const citP = allCitizens();
+export async function readCensusInputs({ eventsAfter = null, onPartial = null } = {}) {
+  let events = null;
+  let latest = null;
+  // Nothing is handed over until the event lists are in. Without them every citizen would fall to level 0, and
+  // "no money trail at all" would be an assertion about people nobody had looked up yet — the page's own worst
+  // failure, in its first sentence. So a page of the list only refines a census that can already be computed.
+  const fire = () => {
+    if (onPartial && events && latest) onPartial({ cit: latest, ...events });
+  };
+  const citP = allCitizens((snap) => {
+    latest = snap;
+    fire();
+  });
   if (eventsAfter) await eventsAfter.catch(() => {});
-  const [cit, subs, binds] = await Promise.all([citP, registry("/api/events?kind=listing-submission"), registry("/api/events?kind=payout-binding")]);
+  const [subs, binds] = await Promise.all([registry("/api/events?kind=listing-submission"), registry("/api/events?kind=payout-binding")]);
+  events = { subs, binds };
+  fire();
+  const cit = await citP;
   return { cit, subs, binds };
 }
 

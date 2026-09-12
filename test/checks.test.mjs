@@ -169,6 +169,45 @@ test("the census does not turn an unread money half into a population of nobody"
   assert.doesNotMatch(said, /null|NaN|undefined/);
 });
 
+test("the census is drawn from the first page of the list, and never walks backwards", async () => {
+  // Each page of the citizen list is 3.5 s behind the last on its own queue, and one refusal costs eleven more, so
+  // the first sentence is built from whatever has arrived. Every intermediate state has to be true on its own.
+  const mk = (n, from = 0) => Array.from({ length: n }, (_, i) => ({ handle: `c${from + i}`, citizen_id: from + i + 1, created_at: from + i }));
+  const args = { submissions: [{ citizen: "c0" }], bindings: [{ citizen: "c1" }] };
+
+  const page1 = censusOf({ ...args, citizens: mk(1000) });
+  assert.equal(page1.byLevel.reduce((a, b) => a + b, 0), 1000, "one mark per citizen actually read, never per citizen that exists");
+  const said = populationLine({ total: 2438, read: 1000, complete: false, moneyRead: false, byLevel: page1.byLevel });
+  assert.match(said, /^1,000 of the 2,438 citizens the registry lists were read on this visit/);
+  assert.doesNotMatch(said, /^All /, "a list read in part is never claimed as all of it");
+  assert.match(censusHeadline({ total: 2438, read: 1000, complete: false, eventsComplete: true, handed: 1, routed: 1, moneyRead: false, notReadWhy: null, byLevel: page1.byLevel }), /lower bounds/);
+
+  // The full list: the same people, more of them, and the claim of completeness is now earned.
+  const all = censusOf({ ...args, citizens: mk(2438) });
+  assert.equal(all.byLevel.reduce((a, b) => a + b, 0), 2438);
+  assert.match(populationLine({ total: 2438, read: 2438, complete: true, moneyRead: false, byLevel: all.byLevel }), /^All 2,438 citizens/);
+
+  // The monotonic guard in runAll: a stage may only be replaced by one built on more citizens, or by the money
+  // pass. A page resolving out of order must not walk the number on screen backwards.
+  const results = { census: null };
+  let read = -1;
+  const setCensus = (c, n, money) => {
+    if (!c?.summary) return;
+    if (money) read = Infinity;
+    else if (n <= read) return;
+    else read = n;
+    results.census = c;
+  };
+  setCensus({ summary: { read: 1000 } }, 1000, false);
+  setCensus({ summary: { read: 2438 } }, 2438, false);
+  setCensus({ summary: { read: 1000 } }, 1000, false); // a stale page landing late
+  assert.equal(results.census.summary.read, 2438, "a late earlier page must not replace a later one");
+  setCensus({ summary: { read: 2438, moneyRead: true } }, Infinity, true);
+  assert.equal(results.census.summary.moneyRead, true);
+  setCensus({ summary: { read: 2438 } }, 2438, false); // the early pass landing after the full one
+  assert.equal(results.census.summary.moneyRead, true, "the finished reading never reverts to 'still being read'");
+});
+
 test("a caught-up observer is a headline, not a silence", async () => {
   // This path cannot be exercised against the live rail today: every mark is weeks behind. It runs only once the
   // registry fixes the thing this page reported, which is exactly when the page must still have something to say.

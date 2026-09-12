@@ -123,24 +123,45 @@ export async function runAll(run, { loadLocal = (f) => net.local(f), status = ()
   // cannot start until the rail lands anyway). Its two event lists ARE held until the rail has landed, because
   // they share the ordinary lane with it and starting them at zero delays every schedule. The rail's own totals
   // are printed beside the census when they are there, and left out until they are.
-  const pCensusIn = readCensusInputs({ eventsAfter: pRail });
+  // Every stage of the census is monotonic: it may only ever be replaced by one built on more citizens, or by the
+  // full pass that adds the money half. Without the guard a page that resolved out of order could walk the count
+  // backwards on screen, which would look exactly like the page contradicting itself.
+  let censusRead = -1;
+  const setCensus = (c, read, money) => {
+    if (!c?.summary) return;
+    if (money) censusRead = Infinity;
+    else if (read <= censusRead) return;
+    else censusRead = read;
+    results.census = c;
+    onUpdate();
+  };
+  const pCensusIn = readCensusInputs({
+    eventsAfter: pRail,
+    onPartial: (inputs) =>
+      census(ctx, inputs, { money: false })
+        .then((c) => setCensus(c, c.summary?.read ?? 0, false))
+        .catch((e) => problems.push(`census stopped: ${e?.message ?? e}`)),
+  });
   // The population is the page's first claim, and it needs only the citizen list and the two event lists — not the
-  // money half, which waits on A and C at the end of the reading. So the census is computed twice from one set of
-  // reads: an early pass that puts the whole population on screen in seconds with the paid states marked unread,
-  // then the full pass that fills them in. No extra request: census() does no reads when it is handed its inputs.
+  // money half, which waits on A and C at the end of the reading. So the census is drawn three ways from one set
+  // of reads, each honest on its own: refined as each page of the list lands, then once over the whole list, then
+  // once more with the money half. No extra request: census() reads nothing when it is handed its inputs.
   const pCensusEarly = pCensusIn.then(async (inputs) => {
     try {
-      results.census = await census(ctx, inputs, { money: false });
+      const c = await census(ctx, inputs, { money: false });
+      setCensus(c, c.summary?.read ?? 0, false);
+      // A citizen list that did not load at all has no summary, and the error belongs on screen.
+      if (!c.summary) results.census = c;
     } catch (e) {
       problems.push(`census stopped: ${e?.message ?? e}`);
     }
     onUpdate();
   });
-  // pCensusEarly is a dependency, not just a sibling: without it the two passes race and the early one could land
+  // pCensusEarly is a dependency, not just a sibling: without it the passes race and an earlier one could land
   // last, leaving the finished reading showing "still being read".
   const pCensus = Promise.all([pCensusIn, pC, pCensusEarly]).then(async ([inputs]) => {
     try {
-      results.census = await census(ctx, inputs);
+      setCensus(await census(ctx, inputs), Infinity, true);
     } catch (e) {
       problems.push(`census stopped: ${e?.message ?? e}`);
     }
