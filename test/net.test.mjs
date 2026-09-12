@@ -3,7 +3,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import * as net from "../docs/js/net.js";
-import { HEAVY } from "../docs/js/net.js";
+import { HEAVY, heavyLaneOf } from "../docs/js/net.js";
 
 test("requests to one node start at least gapMs apart and stay within inflight, even when several wait at once", async () => {
   const starts = [];
@@ -36,6 +36,16 @@ test("the registry's expensive paths, including each page of the citizen list, a
   for (const p of ["/api/rail", "/api/checkpoint", "/api/events", "/treasury", "/api/proof"]) {
     assert.equal(HEAVY.test(p), false, `${p} is cheap enough for the ordinary lane`);
   }
+});
+
+test("the citizen list does not queue behind the listing and binding reads", () => {
+  // Both classes need the long gap, but sharing one queue cost the page its own first sentence: the population
+  // line is built from the citizen list, and behind a queue of detail reads it landed last, under the section that
+  // sits at the top of the page. Same lane for the two detail paths, a lane of its own for the list.
+  assert.equal(heavyLaneOf("/api/listings/23"), heavyLaneOf("/api/payout-bindings/270"), "the two detail classes still share one queue");
+  assert.notEqual(heavyLaneOf("/api/citizens"), heavyLaneOf("/api/listings/23"), "the citizen list must not wait behind listing reads");
+  // Every page of the list is one path (the cursor is in the query), so all of them share the list lane.
+  assert.equal(heavyLaneOf("/api/citizens"), "registry-list");
 });
 
 test("local(): a throttled or blipped read of this page's own data file is retried, not lost", async () => {

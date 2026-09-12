@@ -198,13 +198,18 @@ passed.
 
 ## Server cost
 
-A cold load of the published page made 30 GETs to 1f916.ai on 2026-09-12, twice, and never walks `/api/payouts`. The count moves with
+A cold load of the published page made 24 GETs to 1f916.ai on 2026-09-12, and never walks `/api/payouts`. The count moves with
 the rail: the expensive paths (a listing's record, read for listing 23 and for each listing with an award due, and
 each page of the citizen list) go one at a time, 3.5 seconds apart with one retry after eleven, because the registry
-refuses bursts of them. So a day with more awards due is a slower, heavier read. About 32 to 38 JSON-RPC reads go to
+refuses bursts of them. So a day with more awards due is a slower, heavier read. Those expensive paths use two
+queues, not one: a listing or binding record on one, the citizen list on the other, so the population line at the
+top of the page does not wait behind the detail reads. About 32 to 38 JSON-RPC reads go to
 Base nodes, paced per node with a budget and a circuit breaker; about 10 GETs go to Blockscout and one or two to
-GitHub (the witness day file). The first item of Today lands in about two seconds; the whole reading took about 40
-seconds in both a terminal and a browser on 2026-09-12, most of it spent waiting out that 3.5-second lane. The
+GitHub (the witness day file). Timings, 2026-09-12, served from this repo over loopback so only the registry and
+the Base nodes are remote: the first item of Today lands in about two seconds, the population line and its field of
+marks at about eight (three pages of the citizen list, 3.5 seconds apart), and the whole reading finished in about
+twelve, most of that spent waiting out the slow lanes. The published page measured 15 seconds end to end before
+these two queues were split, on the same day. The
 masthead prints the counts for the read you are looking at, and they are the numbers to trust over these. The tape
 (`#/tape`) lists every request the page made, with method, origin, path, status, bytes and time. Your browser's
 network panel is the independent check.

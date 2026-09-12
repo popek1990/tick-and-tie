@@ -57,6 +57,28 @@ function periodText() {
   return `${from} to block ${groupInt(ctx.finalHead)} (finalized${t ? ", " + t : ""}); receipts: every one in the log`;
 }
 
+/**
+ * When each committed index was built, and how old it is at this reading. It was two drawers deep, and the Period
+ * cell beside it shows the baseline's START block, which is not the same question. A reader who cannot tell fresh
+ * data from five-day-old data has to take the rest on trust, and the whole point here is that they do not have to.
+ * An old file is not a wrong file: each one is re-checked against a live source before it is used, and the sentence
+ * says so rather than leaving the reader to hope.
+ */
+function committedText() {
+  const parts = [
+    ["baseline", ctx.baseline],
+    ["funder routes", ctx.bindingsIndex],
+    ["receipts", ctx.receiptsIndex],
+  ].map(([label, f]) => {
+    if (!f?.built_at) return `${label}: not read`;
+    const hours = (Date.now() - Date.parse(f.built_at)) / 3_600_000;
+    if (!Number.isFinite(hours)) return `${label} ${String(f.built_at).slice(0, 10)}`;
+    const age = hours < 48 ? `${Math.round(hours)} h` : `${(hours / 24).toFixed(1)} d`;
+    return `${label} ${String(f.built_at).slice(0, 10)} (${age})`;
+  });
+  return `${parts.join(" · ")}; each re-checked live before use`;
+}
+
 /** The problems this read recorded for one schedule: a schedule that threw produced no lines, and says so. */
 const stoppedIn = (k) => problems.filter((p) => p.startsWith(`schedule ${k} stopped`));
 
@@ -385,6 +407,8 @@ function render() {
   if (!view) return;
   const p = $("period");
   if (p) p.textContent = periodText();
+  const cd = $("committed");
+  if (cd) cd.textContent = committedText();
   const r = parseRoute(location.hash);
   let node;
   if (r.view === "people") node = viewPeople();

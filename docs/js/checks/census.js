@@ -139,9 +139,19 @@ export function censusHeadline(s) {
   return `${lead}${work}; ${list}${groupInt(s.receipted)} hold a receipt that ties on both ledgers.${paid}${rest}`;
 }
 
-/** The census's own reads (the citizen list and two event lists). Started early; census() waits for schedule C. */
-export async function readCensusInputs() {
-  const [cit, subs, binds] = await Promise.all([allCitizens(), registry("/api/events?kind=listing-submission"), registry("/api/events?kind=payout-binding")]);
+/**
+ * The census's own reads: the citizen list and two event lists. Started early; census() waits for schedule C.
+ *
+ * The list read begins immediately, because the population line is built from it and it has the slow list lane to
+ * itself. The two event lists are cheap but they sit on the ordinary lane, which allows three at a time, so firing
+ * them at zero pushes GET /api/rail back — and every schedule waits on the rail. `eventsAfter` holds them until it
+ * has landed: measured 2026-09-12, holding them cost the population line nothing and gave the whole reading back
+ * about five seconds.
+ */
+export async function readCensusInputs({ eventsAfter = null } = {}) {
+  const citP = allCitizens();
+  if (eventsAfter) await eventsAfter.catch(() => {});
+  const [cit, subs, binds] = await Promise.all([citP, registry("/api/events?kind=listing-submission"), registry("/api/events?kind=payout-binding")]);
   return { cit, subs, binds };
 }
 

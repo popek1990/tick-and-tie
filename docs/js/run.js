@@ -118,7 +118,12 @@ export async function runAll(run, { loadLocal = (f) => net.local(f), status = ()
   const pC = step("C", [pA, pLocal], () => scheduleC(ctx));
   const pG = step("G", [pA, pL23], () => forgeries(run));
   const pD = step("D", [pTreasury, pLocal, pHeads, pCheckpoint], () => scheduleD(ctx));
-  const pCensusIn = pRail.then(() => readCensusInputs());
+  // The citizen list is not behind the rail: it does not need it, it is what the page's first sentence is built
+  // from, and it reaches the slow list lane before anything else wants a turn (the listing and binding reads
+  // cannot start until the rail lands anyway). Its two event lists ARE held until the rail has landed, because
+  // they share the ordinary lane with it and starting them at zero delays every schedule. The rail's own totals
+  // are printed beside the census when they are there, and left out until they are.
+  const pCensusIn = readCensusInputs({ eventsAfter: pRail });
   // The population is the page's first claim, and it needs only the citizen list and the two event lists — not the
   // money half, which waits on A and C at the end of the reading. So the census is computed twice from one set of
   // reads: an early pass that puts the whole population on screen in seconds with the paid states marked unread,

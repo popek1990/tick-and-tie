@@ -246,6 +246,14 @@ function parseJson(r) {
 // Exported so a test can pin which paths are on the slow lane; the lesson is in the comment above.
 export const HEAVY = /^\/api\/(listings|payout-bindings)\/\d+$|^\/api\/citizens$/;
 const HEAVY_GAP_MS = 3500;
+// Two slow lanes, not one. Both classes need the long gap, but they are different resources and queueing them
+// together cost the page its own first sentence: the citizen list is what the population line is built from, and
+// behind a queue of listing and binding reads it landed last, about fifteen seconds in, under a section that sits
+// at the top of the page. Separating them lets the list start while the detail reads wait their turn. The registry
+// therefore sees at most two slow reads per 3.5 s instead of one; the refusals this gap exists for were three at
+// once on the same path class (see above), and 2026-09-12 measurement after the split is in README.
+// Exported for the same reason HEAVY is: a test pins that these two classes do not share a queue.
+export const heavyLaneOf = (pathname) => (pathname === "/api/citizens" ? "registry-list" : "registry-heavy");
 
 /** GET from the registry. Returns {ok, json} or {ok:false, error}. Never throws for network trouble. */
 export async function registry(path) {
@@ -257,7 +265,7 @@ export async function registry(path) {
     if (counters.registry >= b.max) return { ok: false, status: 0, error: `not read: this page's registry budget (${b.max} requests) is spent` };
     counters.registry++;
     return heavy
-      ? paced("registry-heavy", 1, HEAVY_GAP_MS, () => send("registry", url, { method: "GET", headers: { accept: "application/json" } }, b.capBytes))
+      ? paced(heavyLaneOf(url.pathname), 1, HEAVY_GAP_MS, () => send("registry", url, { method: "GET", headers: { accept: "application/json" } }, b.capBytes))
       : paced("registry", b.inflight, b.gapMs, () => send("registry", url, { method: "GET", headers: { accept: "application/json" } }, b.capBytes));
   };
   let r = await once();
