@@ -61,19 +61,19 @@ test("receipt line for binding 150 (event 6045): tied and sealed; corrupted copi
   const event = events.find((e) => e.id === 6045);
   const proof = fx("proof-6045.json");
   const binding = fx("binding-150.json");
-  const l = await receiptLine({ event, proof, binding, receipts, minFinal: MIN_FINAL, registryKey: KEY, readAt: "test" });
+  const l = await receiptLine({ event, proof, binding, receipts, finalHead: MIN_FINAL, registryKey: KEY, readAt: "test" });
   assert.equal(l.state, STATE.TIED, l.why);
   assert.equal(l.sealed, true);
   assert.ok(l.notVerified.length >= 3);
   // the receipt's amount altered in the binding record: the payload hash no longer matches the event
   const tampered = structuredClone(binding);
   tampered.receipt.payload.amount_atomic = "5000001";
-  const l2 = await receiptLine({ event, proof, binding: tampered, receipts, minFinal: MIN_FINAL, registryKey: KEY, readAt: "test" });
+  const l2 = await receiptLine({ event, proof, binding: tampered, receipts, finalHead: MIN_FINAL, registryKey: KEY, readAt: "test" });
   assert.equal(l2.sealed, false);
   assert.notEqual(l2.state, STATE.TIED);
   // the binding's top-level amount altered: the tie follows the sealed payload, and a record that contradicts its
   // own payload is not sealed, so the line cannot tick
-  const l3 = await receiptLine({ event, proof, binding: { ...binding, amount_atomic: "4000000" }, receipts, minFinal: MIN_FINAL, registryKey: KEY, readAt: "test" });
+  const l3 = await receiptLine({ event, proof, binding: { ...binding, amount_atomic: "4000000" }, receipts, finalHead: MIN_FINAL, registryKey: KEY, readAt: "test" });
   assert.equal(l3.sealed, false);
   assert.notEqual(l3.state, STATE.TIED);
   for (const bad of [l2, l3]) assert.notEqual(bad.mark, "✓", "a line that is not sealed cannot show a tick");
@@ -82,7 +82,7 @@ test("receipt line for binding 150 (event 6045): tied and sealed; corrupted copi
 test("a ✓ from Base never survives a society-log half that was not read", async () => {
   const event = events.find((e) => e.id === 6045);
   const binding = fx("binding-150.json");
-  const args = { event, binding, receipts, minFinal: MIN_FINAL, registryKey: KEY, readAt: "test" };
+  const args = { event, binding, receipts, finalHead: MIN_FINAL, registryKey: KEY, readAt: "test" };
   // GET /api/proof refused (the registry's rate limit arrives as a network error): Base still ties at two nodes,
   // but the society's log half was never read, so the line must say "not read" and must not tick.
   const l = await receiptLine({ ...args, proof: null });
@@ -91,7 +91,7 @@ test("a ✓ from Base never survives a society-log half that was not read", asyn
   assert.notEqual(l.mark, "✓", "a line the page itself calls not read cannot show a tick");
   assert.match(l.why, /Base ties at two nodes; the society's log half was not read/);
   // The tie's own refinements must survive while the state is still the tie's: ◔ above finality, not a flat ?
-  const p = await receiptLine({ ...args, proof: fx("proof-6045.json"), minFinal: 1 });
+  const p = await receiptLine({ ...args, proof: fx("proof-6045.json"), finalHead: 1 });
   assert.equal(p.state, STATE.PENDING);
   assert.equal(p.mark, "◔", "½, ≠ and ◔ come from the tie and must not be flattened");
 });
@@ -99,7 +99,7 @@ test("a ✓ from Base never survives a society-log half that was not read", asyn
 test("event 1258 (binding 1) also seals with its own proof", async () => {
   if (!existsSync(new URL("./fixtures/proof-1258.json", import.meta.url))) return;
   const event = events.find((e) => e.id === 1258);
-  const l = await receiptLine({ event, proof: fx("proof-1258.json"), binding: fx("binding-1.json"), receipts, minFinal: MIN_FINAL, registryKey: KEY, readAt: "test" });
+  const l = await receiptLine({ event, proof: fx("proof-1258.json"), binding: fx("binding-1.json"), receipts, finalHead: MIN_FINAL, registryKey: KEY, readAt: "test" });
   assert.equal(l.state, STATE.TIED, l.why);
   assert.equal(l.sealed, true);
 });

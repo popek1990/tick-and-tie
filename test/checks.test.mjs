@@ -2,7 +2,7 @@
 // payments, the books' row matching, and the link builder. Each state the page can print has a case that makes it.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { decide, tieBalance, agreedValue, STATE } from "../docs/js/chain.js";
+import { decide, finalizedHead, tieBalance, agreedValue, STATE } from "../docs/js/chain.js";
 import { footingF } from "../docs/js/lines.js";
 import { summary } from "../docs/js/run.js";
 import { classifyTransfer, nextObserverCall, catchUp, cycleMinutesOf, scheduleC } from "../docs/js/checks/observer.js";
@@ -15,18 +15,42 @@ import { linkHref, saysKind, el } from "../docs/js/ui.js";
 import { USDC, TOKEN, ranges, readError } from "../docs/js/codec.js";
 
 const bal = (v) => ({ value: v });
-const rule = (claim) => ({ same: (a, b) => a.value === b.value, matchesClaim: (v) => v.value === claim, blockOf: (v) => v.block ?? null, minFinal: 100 });
+const rule = (claim) => ({ same: (a, b) => a.value === b.value, matchesClaim: (v) => v.value === claim, blockOf: (v) => v.block ?? null, finalHead: 100 });
 
 test("the tie rule: two operators, same answer, behind finality, equal to the claim", () => {
   assert.equal(decide({ base: { value: 5n, block: 90 }, drpc: { value: 5n, block: 90 } }, rule(5n)).state, STATE.TIED);
   assert.equal(decide({ base: { value: 5n, block: 90 }, drpc: { value: 5n, block: 90 } }, rule(6n)).state, STATE.BROKEN, "they agree, and not with the claim");
-  assert.equal(decide({ base: { value: 5n, block: 101 }, drpc: { value: 5n, block: 101 } }, rule(5n)).state, STATE.PENDING, "above min(finalized)");
+  assert.equal(decide({ base: { value: 5n, block: 101 }, drpc: { value: 5n, block: 101 } }, rule(5n)).state, STATE.PENDING, "above the finalized head");
   const one = decide({ base: { value: 5n, block: 90 }, drpc: { notRead: "HTTP 429" } }, rule(5n));
   assert.equal(one.state, STATE.UNREAD);
   assert.equal(one.mark, "½", "one node is read once, not tied");
   const split = decide({ base: { value: 5n, block: 90 }, drpc: { value: 6n, block: 90 } }, rule(5n));
   assert.equal(split.mark, "≠", "nodes that disagree are not read, never a break");
   assert.equal(decide({ base: { notRead: "timeout" }, drpc: { notRead: "HTTP 503" } }, rule(5n)).state, STATE.UNREAD);
+});
+
+test("the finalized head: two operators, so one node lying in either direction cannot move it", () => {
+  const per = {
+    base: { number: 51_200_000 },
+    tenderly: { number: 51_199_990 },
+    drpc: { number: 51_199_995 },
+    publicnode: { number: 51_300_000 }, // refuses archive reads, so it does not vote on the head
+  };
+  assert.equal(finalizedHead(per).finalHead, 51_199_995, "the highest block two archive operators call final");
+  assert.deepEqual(finalizedHead(per).problems, [], "a few blocks apart is jitter, not worth a word");
+
+  const behind = finalizedHead({ ...per, drpc: { number: 50_199_995 } });
+  assert.equal(behind.finalHead, 51_199_990, "a node a million blocks behind does not drag the reading backwards");
+  assert.match(behind.problems[0] ?? "", /disagree about Base's finalized head by 1,000,005 blocks/);
+  assert.match(behind.problems[0] ?? "", /base\.drpc\.org says 50,199,995/);
+
+  const ahead = finalizedHead({ ...per, drpc: { number: 52_200_000 } });
+  assert.equal(ahead.finalHead, 51_200_000, "and a node running ahead cannot pull a younger block into a tick");
+  assert.equal(ahead.problems.length, 1);
+
+  assert.equal(finalizedHead({ base: { number: 100 }, tenderly: { number: 90 } }).finalHead, 90, "two voices: the lower, as before");
+  assert.equal(finalizedHead({ base: { number: 100 } }).finalHead, 100, "one archive voice stands alone; decide() still refuses the tick");
+  assert.equal(finalizedHead({ publicnode: { number: 100 }, base: { notRead: "HTTP 429" } }).finalHead, null, "no archive answer is no head");
 });
 
 test("balances: tolerance for cents, and an agreed value only from two agreeing nodes", () => {
@@ -89,7 +113,7 @@ test("C: a stretch of Base that was not read is never printed as 'no payment'", 
   const wallet = "0x" + "1".repeat(40);
   const rail = { observer: { marks: [{ funder_address: wallet, last_block: 50_000_000 }], walk_note: "one funder wallet per five-minute cycle" }, listings: [] };
   // No finalized head was read, so the wallet was never walked: an empty result means "not read", not "nothing".
-  const [l] = await scheduleC({ docs: { rail }, minFinal: null, readAt: "test" });
+  const [l] = await scheduleC({ docs: { rail }, finalHead: null, readAt: "test" });
   const said = l.sentence.join("");
   assert.match(said, /did not read that stretch of Base, so it cannot say what moved there/);
   assert.doesNotMatch(said, /no payment/, "absence is only absence when the walk happened");
@@ -194,7 +218,7 @@ test("links: only validated parts become an href; everything else stays inert te
 test("a clock whose listing did not answer stays on the page as not read, from the rail's own figures", async () => {
   const listing = (id, due) => ({ listing_id: id, asset: { chain_id: 8453, token: USDC }, award_states: { payable: 1 }, economics: { outstanding_awarded_atomic: due, currently_due_atomic: due, overdue_unpaid_atomic: "0" } });
   const rail = { now: 1789000000000, listings: [listing(28, "100000"), { ...listing(29, "0"), award_states: { paid: 1 } }] };
-  const ctx = { docs: { rail }, readAt: "test", minFinal: 100, listingDetail: async () => ({ ok: false, status: 0, error: "Failed to fetch" }) };
+  const ctx = { docs: { rail }, readAt: "test", finalHead: 100, listingDetail: async () => ({ ok: false, status: 0, error: "Failed to fetch" }) };
   const lines = await scheduleF(ctx);
   assert.equal(lines.length, 1, "listing 29 owes nothing, so it has no clock");
   const [l] = lines;
@@ -208,7 +232,7 @@ test("F: a listing whose own amounts do not parse stays on the page, and is not 
   const listing = (id, due) => ({ listing_id: id, asset: { chain_id: 8453, token: USDC }, award_states: { payable: 1 }, economics: { outstanding_awarded_atomic: due, currently_due_atomic: due, overdue_unpaid_atomic: "0" } });
   // "12.5" is not an atomic integer: parseAtomic returns null. Rounding that down to zero would drop the listing.
   const rail = { now: 1789000000000, listings: [listing(31, "12.5"), { ...listing(32, "0"), award_states: { paid: 1 } }] };
-  const ctx = { docs: { rail }, readAt: "test", minFinal: 100, listingDetail: async () => ({ ok: false, status: 0, error: "Failed to fetch" }) };
+  const ctx = { docs: { rail }, readAt: "test", finalHead: 100, listingDetail: async () => ({ ok: false, status: 0, error: "Failed to fetch" }) };
   const lines = await scheduleF(ctx);
   assert.equal(lines.length, 1, "listing 32 owes nothing; listing 31's unreadable figure keeps it here");
   assert.equal(lines[0].ref, "F-31");
@@ -219,7 +243,7 @@ test("F: a listing whose own amounts do not parse stays on the page, and is not 
 
 test("D: without the committed baseline the books say not read, and D-5 stays on the page", async () => {
   const treasury = { entries: [], onchain_cents: null, onchain_checked_at: null, assets: {} };
-  const ctx = { docs: { treasury, checkpoint: { checkpoints: [] } }, baseline: null, minFinal: 51_200_000, headRef: null, readAt: "test", registryKey: null };
+  const ctx = { docs: { treasury, checkpoint: { checkpoints: [] } }, baseline: null, finalHead: 51_200_000, headRef: null, readAt: "test", registryKey: null };
   const lines = await scheduleD(ctx);
   const d4 = lines.find((l) => l.ref === "D-4");
   const d5 = lines.find((l) => l.ref === "D-5");

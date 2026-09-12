@@ -151,7 +151,7 @@ async function outflowsFrom(ctx, wallet, afterBlock) {
     }
   } else notes.push("the committed baseline did not load, so only the indexer's newest transfers were read");
   const liveFrom = Math.max(afterBlock, base?.to_block ?? afterBlock);
-  const liveNeeded = !!(ctx.minFinal && liveFrom < ctx.minFinal);
+  const liveNeeded = !!(ctx.finalHead && liveFrom < ctx.finalHead);
   let liveOk = !liveNeeded; // nothing after the baseline to read is not a failure to read it
   if (liveNeeded) {
     const r = await indexerPages(`/api/v2/addresses/${wallet}/token-transfers?type=ERC-20&filter=from`, liveFrom, 3);
@@ -162,7 +162,7 @@ async function outflowsFrom(ctx, wallet, afterBlock) {
       const block = Number(it.block_number ?? 0);
       const token = lc(it.token?.address_hash ?? it.token?.address);
       const value = parseAtomic(it.total?.value);
-      if (block <= liveFrom || block > ctx.minFinal || !OBSERVED_TOKENS.includes(token) || value === null || lc(it.from?.hash) !== wallet) continue;
+      if (block <= liveFrom || block > ctx.finalHead || !OBSERVED_TOKENS.includes(token) || value === null || lc(it.from?.hash) !== wallet) continue;
       take({ tx: lc(it.transaction_hash), logIndex: Number(it.log_index), token, from: wallet, to: lc(it.to?.hash), value, block, source: "indexer hint" });
     }
   }
@@ -230,17 +230,17 @@ export async function scheduleC(ctx) {
     const firstAt = listings.map((l) => l.created_at).filter(Number.isFinite).sort((a, b) => a - b)[0];
     const startBlock = firstAt && ctx.headRef ? blockAt(new Date(firstAt), ctx.headRef) - START_MARGIN : null;
     const walkFrom = Math.max(ctx.baseline?.from_block ?? 0, startBlock ?? 0);
-    const gap = ctx.minFinal && !never ? ctx.minFinal - mark.last_block : null;
+    const gap = ctx.finalHead && !never ? ctx.finalHead - mark.last_block : null;
     const behind = never || gap === null || gap > DAY_BLOCKS;
     const days = gap !== null ? Math.round((gap * BLOCK_SECONDS) / 86400) : null;
 
-    const { found, zero, notes, stretchRead } = ctx.minFinal ? await outflowsFrom(ctx, wallet, walkFrom - 1) : { found: [], zero: 0, notes: ["no finalized head was read, so this wallet was not walked"], stretchRead: false };
+    const { found, zero, notes, stretchRead } = ctx.finalHead ? await outflowsFrom(ctx, wallet, walkFrom - 1) : { found: [], zero: 0, notes: ["no finalized head was read, so this wallet was not walked"], stretchRead: false };
     const { bindings, unread, live, indexed } = found.length ? await fundersBindings(ctx, wallet) : { bindings: [], unread: [], live: [], indexed: [] };
     if (unread.length) notes.push(`listing detail not read for listing${unread.length === 1 ? "" : "s"} ${unread.join(", ")}: a payment to a route there would be missed`);
     const receipts = found.length ? await receiptsAt(found.map((f) => f.tx)) : null;
     const all = found.map((f) => {
       const time = blockTime(f.block, ctx.headRef);
-      return { ...f, time, tie: tieTransfer(f, receipts, ctx.minFinal), cls: classifyTransfer(f, bindings), receipted: ctx.receiptTxs?.has(f.tx) ?? false, after: never || f.block > mark.last_block };
+      return { ...f, time, tie: tieTransfer(f, receipts, ctx.finalHead), cls: classifyTransfer(f, bindings), receipted: ctx.receiptTxs?.has(f.tx) ?? false, after: never || f.block > mark.last_block };
     });
     const tied = (p) => p.tie.state === STATE.TIED;
     const payments = all.filter((p) => p.cls.kind === "payment");
@@ -269,7 +269,7 @@ export async function scheduleC(ctx) {
 
     let state;
     let why;
-    if (!ctx.minFinal) [state, why] = [STATE.UNREAD, "not read: no finalized head was read"];
+    if (!ctx.finalHead) [state, why] = [STATE.UNREAD, "not read: no finalized head was read"];
     else if (never) [state, why] = [STATE.BLIND, "its last_block is null: it has never finished a read of this wallet, so by the registry's own rule a zero it serves here is not a reading"];
     else if (behind) [state, why] = [STATE.BLIND, `the observer is ${groupInt(gap)} blocks (≈${days} days) behind finality; by the registry's own rule a zero it serves on these listings is not a reading yet`];
     else if (!ctx.baseline || unread.length) [state, why] = [STATE.UNREAD, "the observer is current, but this page could not read everything it needs to compare (see NOT VERIFIED)"];
@@ -321,7 +321,7 @@ export async function scheduleC(ctx) {
             : []),
         ],
         shows: [
-          { node: "finalized", text: !ctx.minFinal ? "not read" : never ? `min(finalized) ${groupInt(ctx.minFinal)}; the mark has no last_block, so this page walked from block ${groupInt(walkFrom)} (≈ the funder's first listing, minus ${groupInt(START_MARGIN)})` : `min(finalized) ${groupInt(ctx.minFinal)}; the mark is ${groupInt(gap)} blocks behind (block ${groupInt(mark.last_block)} ≈ ${isoMin(blockTime(mark.last_block, ctx.headRef))})` },
+          { node: "finalized", text: !ctx.finalHead ? "not read" : never ? `finalized head, two operators: ${groupInt(ctx.finalHead)}; the mark has no last_block, so this page walked from block ${groupInt(walkFrom)} (≈ the funder's first listing, minus ${groupInt(START_MARGIN)})` : `finalized head, two operators: ${groupInt(ctx.finalHead)}; the mark is ${groupInt(gap)} blocks behind (block ${groupInt(mark.last_block)} ≈ ${isoMin(blockTime(mark.last_block, ctx.headRef))})` },
           ...(behind && catchText ? [{ node: "catching up", text: catchText }] : []),
           ...group("After the mark, no receipt: the rail cannot count these yet", unseen),
           ...group("After the mark, with a receipt (schedule A)", afterReceipted),
@@ -339,7 +339,7 @@ export async function scheduleC(ctx) {
           ...notes,
         ],
         extra: { mark, payments, gap, never, behind, unseen, fast, slow },
-        cite: `C ${short(wallet)}: observer last_block ${mark.last_block}${gap !== null ? `, ${groupInt(gap)} behind min(finalized) ${ctx.minFinal}` : ""}; after it, ${plural(unseen.length, "payment")} by the registry's rule with no receipt, tied at two nodes`,
+        cite: `C ${short(wallet)}: observer last_block ${mark.last_block}${gap !== null ? `, ${groupInt(gap)} behind the finalized head two operators agree on (${ctx.finalHead})` : ""}; after it, ${plural(unseen.length, "payment")} by the registry's rule with no receipt, tied at two nodes`,
       })
     );
   }

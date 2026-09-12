@@ -44,7 +44,7 @@ if (json) {
   const out = {
     kind: "tick-and-tie.reading.v1",
     read_at: ctx.readAt,
-    min_finalized: ctx.minFinal,
+    finalized_head: ctx.finalHead,
     summary: summary(run),
     today: (results.today ?? []).map((t) => ({ ref: t.ref, head: sentence(t.head), body: t.body, not_verified: t.notVerified ?? null })),
     census: results.census?.summary ?? null,
@@ -56,7 +56,7 @@ if (json) {
 } else {
   const w = (s = "") => process.stdout.write(s + "\n");
   w(`TICK & TIE · ${summary(run)}`);
-  w(`min(finalized) ${ctx.minFinal ?? "not read"}`);
+  w(`finalized head, two operators: ${ctx.finalHead ?? "not read"}`);
   w();
   w("TODAY ON THE RAIL");
   for (const [i, t] of (results.today ?? []).entries()) {

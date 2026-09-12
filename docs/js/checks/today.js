@@ -16,13 +16,13 @@ const DAY_BLOCKS = 43_200; // one day at BLOCK_SECONDS
 /** Item 1, with its replay: needs only GET /api/rail and the finalized head. Null when no mark is behind. */
 export async function observerItem(ctx) {
   const marks = ctx.docs.rail?.observer?.marks ?? [];
-  if (!ctx.minFinal || !marks.length) return null;
+  if (!ctx.finalHead || !marks.length) return null;
   const never = marks.filter((m) => !Number.isInteger(m.last_block));
-  const behind = marks.filter((m) => Number.isInteger(m.last_block) && ctx.minFinal - m.last_block > DAY_BLOCKS).sort((a, b) => b.last_block - a.last_block);
+  const behind = marks.filter((m) => Number.isInteger(m.last_block) && ctx.finalHead - m.last_block > DAY_BLOCKS).sort((a, b) => b.last_block - a.last_block);
   if (!behind.length && !never.length) return null;
   const current = marks.length - behind.length - never.length;
   // Blocks → days assumes Base's 2-second block, so this is an estimate and says so, exactly as schedule C does.
-  const days = behind.map((x) => Math.round(((ctx.minFinal - x.last_block) * BLOCK_SECONDS) / 86400));
+  const days = behind.map((x) => Math.round(((ctx.finalHead - x.last_block) * BLOCK_SECONDS) / 86400));
   const lo = Math.min(...days);
   const hi = Math.max(...days);
   const span = lo === hi ? `≈${lo} ${lo === 1 ? "day" : "days"}` : `≈${lo} to ${hi} days`;
@@ -41,7 +41,7 @@ export async function observerItem(ctx) {
     return item;
   }
   item.route = `#/c/${m.funder_address.toLowerCase()}`;
-  const r = await replay(m, ctx.minFinal); // the most recent mark: its next call is the one the observer is making now
+  const r = await replay(m, ctx.finalHead); // the most recent mark: its next call is the one the observer is making now
   item.replay = r;
   item.body.push(`Its next question (eth_getLogs over ${groupInt(KEYED_RANGE)} blocks from ${short(m.funder_address)}), put just now to its own public providers, in its order:`);
   for (const [node, s] of Object.entries(r.wide)) item.body.push(`${node}: ${s}`);
@@ -54,7 +54,7 @@ export async function observerItem(ctx) {
   const throttled = marks.filter((x) => /HTTP 429/.test(String(x.last_error ?? ""))).length;
   if (throttled) item.body.push(`${throttled} of the marks end their last_error with HTTP 429, the limit the maintainer traced to Cloudflare Workers' egress at mainnet.base.org on 2026-08-07 (c1574). last_error keeps only the last provider's message, and this browser does not share that egress.`);
   const cycle = cycleMinutesOf(ctx.docs.rail?.observer?.walk_note);
-  const worst = Math.max(...behind.map((x) => ctx.minFinal - x.last_block));
+  const worst = Math.max(...behind.map((x) => ctx.finalHead - x.last_block));
   const fast = catchUp(worst, marks.length, cycle, KEYED_RANGE);
   const slow = catchUp(worst, marks.length, cycle, CAPPED_RANGE);
   if (fast && slow) item.body.push(`Catching up the furthest mark (${groupInt(worst)} blocks), as arithmetic on the rail's walk_note (one wallet per ${cycle}-minute cycle, ${marks.length} wallets): ${hoursText(fast.hours)} at ${groupInt(KEYED_RANGE)} blocks a cycle, ${hoursText(slow.hours)} at ${groupInt(CAPPED_RANGE)}.`);

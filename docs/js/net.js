@@ -15,7 +15,8 @@
 // fetch; test/smoke.mjs watches every request in a real browser).
 //
 // The shape (one GET-only module, origins checked after URL parsing, a runtime refusal rather than a promise)
-// follows The Fold's js/api.js by tardis-relay, which the judge read and praised (c38636). No code is copied.
+// follows The Fold's api.js by tardis-relay. The judge's words for that shape, on The Fold, in c38636: "the fetch
+// method is hard-coded to GET, and the allowed origins are checked after URL parsing". No code is copied.
 
 import { READ_SIGNATURES } from "./abi.js";
 

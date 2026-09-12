@@ -224,6 +224,41 @@ const NAMES = {
 
 export const codepointLabel = (cp) => `U+${cp.toString(16).toUpperCase().padStart(4, "0")}${NAMES[cp] ? " " + NAMES[cp] : ""}`;
 
+// A word, for the mixed-script rule below: a run of letters, digits, marks and underscores, so "USDС." and
+// "(USDС)" still read as one word. LOOKALIKE_SCRIPT is the scripts poisoners borrow their lookalikes from: the
+// ones CONFUSABLE (below) draws on, which are the scripts Unicode TR39 calls confusable with Latin.
+const WORDISH = /[\p{L}\p{N}\p{M}_]/u;
+const LOOKALIKE_SCRIPT = /[\p{Script=Cyrillic}\p{Script=Greek}\p{Script=Armenian}\p{Script=Georgian}\p{Script=Cherokee}\p{Script=Coptic}]/u;
+const ASCII = /^[\x21-\x7e]$/;
+
+/**
+ * Which characters make a word mixed-script: the indices of lookalike letters inside a word that also holds a
+ * plain ASCII letter. That mix is the forgery ("USDС", Cyrillic С). A word written in one script is left alone, so
+ * a Cyrillic or Greek handle stays readable, and accented Latin ("café") is Latin, not a mix. What this does NOT
+ * catch is a lookalike that is itself Latin script and not in CONFUSABLE; strict mode is where symbols are read.
+ */
+function mixedScriptAt(chars) {
+  const out = new Set();
+  for (let i = 0; i < chars.length; ) {
+    let j = i;
+    while (j < chars.length && WORDISH.test(chars[j])) j++;
+    if (j === i) {
+      i++;
+      continue;
+    }
+    const odd = [];
+    let latin = false;
+    for (let k = i; k < j; k++) {
+      const ch = chars[k];
+      if (LOOKALIKE_SCRIPT.test(ch) || (CONFUSABLE[ch] && !ASCII.test(ch))) odd.push(k);
+      else if (/[A-Za-z]/.test(ch)) latin = true;
+    }
+    if (latin) for (const k of odd) out.add(k);
+    i = j;
+  }
+  return out;
+}
+
 /**
  * Split untrusted text into plain runs and visible tokens for hidden characters. Rendering is done by the UI with
  * textContent only; this never produces markup. Tabs and newlines pass through; long runs of combining marks
@@ -232,22 +267,26 @@ export const codepointLabel = (cp) => `U+${cp.toString(16).toUpperCase().padStar
 export function reveal(str, max = 400, { strict = false } = {}) {
   // strict (token symbols): every character outside printable ASCII becomes a visible token, because in a symbol
   // a Cyrillic С or an accented Ú is the forgery itself, not decoration.
+  // Prose is not a symbol, so its letters stay — except where one word mixes a plain ASCII letter with a lookalike
+  // from another script, which is the same forgery inside a sentence. Everything else reads as written.
   const s = String(str ?? "");
+  const chars = [...s];
+  const mixed = strict ? null : mixedScriptAt(chars);
   const out = [];
   let buf = "";
   let marks = 0;
-  let count = 0;
-  for (const ch of s) {
-    if (++count > max) {
+  for (let i = 0; i < chars.length; i++) {
+    if (i >= max) {
       if (buf) out.push({ text: buf });
-      out.push({ note: `… truncated, ${[...s].length - max} more characters` });
+      out.push({ note: `… truncated, ${chars.length - max} more characters` });
       return out;
     }
+    const ch = chars[i];
     const cp = ch.codePointAt(0);
     if (/\p{M}/u.test(ch)) {
       if (++marks > 2) continue;
     } else marks = 0;
-    if ((ch !== "\t" && ch !== "\n" && HIDDEN.test(ch)) || (strict && !/^[\x21-\x7e]$/.test(ch))) {
+    if ((ch !== "\t" && ch !== "\n" && HIDDEN.test(ch)) || (strict && !ASCII.test(ch)) || mixed?.has(i)) {
       if (buf) out.push({ text: buf });
       buf = "";
       out.push({ hidden: codepointLabel(cp) });

@@ -43,9 +43,19 @@ test("counterfeit symbols fold to the real ones; the real token never counts as 
 
 test("reveal: hidden characters always shown; in strict mode every non-ASCII character is shown", () => {
   assert.deepEqual(reveal("a‮b"), [{ text: "a" }, { hidden: "U+202E RIGHT-TO-LEFT OVERRIDE" }, { text: "b" }]);
-  assert.deepEqual(reveal("ÚSDС"), [{ text: "ÚSDС" }], "ordinary letters pass in prose");
   assert.deepEqual(reveal("ÚSDС", 32, { strict: true }), [{ hidden: "U+00DA LATIN CAPITAL LETTER U WITH ACUTE" }, { text: "SD" }, { hidden: "U+0421 CYRILLIC CAPITAL LETTER ES" }]);
   assert.deepEqual(reveal("abcdef", 3), [{ text: "abc" }, { note: "… truncated, 3 more characters" }]);
+});
+
+test("reveal in prose: a word mixing Latin with a lookalike script is marked, one script is left readable", () => {
+  const es = "U+0421 CYRILLIC CAPITAL LETTER ES";
+  assert.deepEqual(reveal("paid in ÚSDС today"), [{ text: "paid in ÚSD" }, { hidden: es }, { text: " today" }], "the Cyrillic С in a Latin word");
+  assert.deepEqual(reveal("(USDС)"), [{ text: "(USD" }, { hidden: es }, { text: ")" }], "brackets do not end the word");
+  assert.deepEqual(reveal("Привет"), [{ text: "Привет" }], "a word in one script is text, not a forgery");
+  assert.deepEqual(reveal("Привет USDC"), [{ text: "Привет USDC" }], "and a space keeps the two words apart");
+  assert.deepEqual(reveal("café"), [{ text: "café" }], "accented Latin is Latin");
+  assert.deepEqual(reveal("l| USDC"), [{ text: "l| USDC" }], "ASCII lookalikes are not marked: prose is full of l and I");
+  assert.deepEqual(reveal("USDⅭ"), [{ text: "USD" }, { hidden: "U+216D ROMAN NUMERAL ONE HUNDRED" }], "a non-ASCII confusable, though its script is Latin");
 });
 
 test("lookalikes: a real poisoning pair, and an address is never its own lookalike", () => {

@@ -3,14 +3,14 @@
 // A line is TIED only when all of this holds:
 //   - at least two nodes run by different operators answered, each on chain id 8453;
 //   - they agree on the block hash of the block in question, and on every decoded value;
-//   - that block is at or below the LOWER of their finalized heads;
+//   - that block is at or below the finalized head two archive operators agree on (see finalizedHead);
 //   - no node that answered disagrees (stricter than "2 of 3": one liar is enough to stop a tick).
 // One answer is ½ (read once, not tied). Disagreement is ≠. Both count as not read. A throttle, an error or a
 // null is "not read", never zero and never "not there".
 
 import { NODES, TIE_NODES, FALLBACK_NODE, rpc } from "./net.js";
 import { balanceOfData } from "./abi.js";
-import { decodeTransfer, parseQuantity, parseWord, lc } from "./codec.js";
+import { decodeTransfer, parseQuantity, parseWord, groupInt, lc } from "./codec.js";
 
 export const STATE = Object.freeze({
   TIED: "tied",
@@ -38,10 +38,42 @@ export async function batchAt(nodeId, calls) {
   return out;
 }
 
+const hostOf = (id, nodes = NODES) => (nodes[id]?.url ? new URL(nodes[id].url).host : id);
+
+// About an hour of Base blocks at two seconds each, and some four finality windows. Healthy nodes sit within a few
+// hundred blocks of one another; an hour apart is a stale view, not jitter, so it gets named.
+const HEAD_SPREAD_BLOCKS = 1800;
+
 /**
- * The finalized head at each node that answers. Every tie below is pinned to min(finalized), so a node that is
- * behind cannot make a younger block look final.
+ * The finalized head this reading pins every tie to: the highest block at least two archive OPERATORS call
+ * finalized or lower — the second highest of their heads, not the lowest. It is the same two-operator rule the
+ * marks use, and it holds in both directions: one node stuck in the past cannot drag the whole reading backwards,
+ * and one node running ahead cannot pull a younger block into ✓, because two operators still vouch for every block
+ * at or below this one. With a single archive voice there is nothing to tie, so its own head stands and decide()
+ * refuses the tick separately. A wide spread between the answers is reported rather than smoothed over.
  */
+export function finalizedHead(per, nodes = NODES) {
+  const best = new Map(); // operator -> [node id, its head]; two nodes of one operator are one voice, the higher one
+  for (const [id, v] of Object.entries(per)) {
+    if (!v?.number || !nodes[id]?.archive) continue;
+    const seen = best.get(nodes[id].operator);
+    if (!seen || v.number > seen[1]) best.set(nodes[id].operator, [id, v.number]);
+  }
+  const voices = [...best.values()].sort((a, b) => b[1] - a[1]);
+  const problems = [];
+  if (!voices.length) return { finalHead: null, problems };
+  const finalHead = voices.length > 1 ? voices[1][1] : voices[0][1];
+  const [highId, high] = voices[0];
+  const [lowId, low] = voices[voices.length - 1];
+  if (voices.length > 1 && high - low > HEAD_SPREAD_BLOCKS) {
+    problems.push(
+      `the archive nodes disagree about Base's finalized head by ${groupInt(high - low)} blocks (${hostOf(highId, nodes)} says ${groupInt(high)}, ${hostOf(lowId, nodes)} says ${groupInt(low)}): this reading ties to ${groupInt(finalHead)}, the highest block two operators call final, and anything above it reads as pending`
+    );
+  }
+  return { finalHead, problems };
+}
+
+/** The finalized head at each node that answers, and the one head this reading uses (see finalizedHead above). */
 export async function heads(nodeIds = ["base", "tenderly", "drpc", "publicnode"]) {
   const per = {};
   await Promise.all(
@@ -61,15 +93,14 @@ export async function heads(nodeIds = ["base", "tenderly", "drpc", "publicnode"]
     })
   );
   const answered = Object.entries(per).filter(([, v]) => v.number);
-  const archive = answered.filter(([id]) => NODES[id].archive);
-  const minFinal = archive.length ? Math.min(...archive.map(([, v]) => v.number)) : null;
-  return { per, minFinal, answered: answered.map(([id]) => id) };
+  const { finalHead, problems } = finalizedHead(per);
+  return { per, finalHead, problems, answered: answered.map(([id]) => id) };
 }
 
 /** Decide a tie from per-node values. `same(a, b)` compares two node answers; `claim(v)` compares to the claim. */
-export function decide(perNode, { same, matchesClaim, blockOf, minFinal }) {
+export function decide(perNode, { same, matchesClaim, blockOf, finalHead }) {
   const answers = Object.entries(perNode).filter(([, v]) => v && !v.notRead);
-  const reasons = Object.entries(perNode).filter(([, v]) => v?.notRead).map(([id, v]) => `${NODES[id]?.url ? new URL(NODES[id].url).host : id}: ${v.notRead}`);
+  const reasons = Object.entries(perNode).filter(([, v]) => v?.notRead).map(([id, v]) => `${hostOf(id)}: ${v.notRead}`);
   if (answers.length === 0) return { state: STATE.UNREAD, mark: "?", why: reasons.join("; ") || "not read: no node answered" };
   if (answers.length === 1) return { state: STATE.UNREAD, mark: "½", why: `read once, not tied (only ${answers[0][0]} answered)${reasons.length ? "; " + reasons.join("; ") : ""}` };
   const [first, ...rest] = answers;
@@ -77,7 +108,7 @@ export function decide(perNode, { same, matchesClaim, blockOf, minFinal }) {
   const operators = new Set(answers.map(([id]) => NODES[id].operator));
   if (operators.size < 2) return { state: STATE.UNREAD, mark: "½", why: "only one operator answered" };
   const block = blockOf ? blockOf(first[1]) : null;
-  if (block !== null && minFinal !== null && block > minFinal) return { state: STATE.PENDING, mark: "◔", why: `in block ${block}, above the finalized head ${minFinal}` };
+  if (block !== null && finalHead !== null && block > finalHead) return { state: STATE.PENDING, mark: "◔", why: `in block ${block}, above the finalized head ${finalHead}` };
   if (!matchesClaim(first[1])) return { state: STATE.BROKEN, mark: "✗", why: "two nodes agree, and not with the claim" };
   return { state: STATE.TIED, mark: "✓", why: `${answers.length} nodes, ${operators.size} operators agree` };
 }
@@ -142,14 +173,14 @@ const sameTransfer = (a, b) =>
  * Tie one claimed transfer {tx, logIndex, token, from, to, value(BigInt), block?, blockHash?} against receipts
  * read at several nodes. `from` may be null when the claim does not name a payer.
  */
-export function tieTransfer(claim, receiptsByNode, minFinal) {
+export function tieTransfer(claim, receiptsByNode, finalHead) {
   const perNode = {};
   const tx = lc(claim.tx);
   for (const [id, byTx] of Object.entries(receiptsByNode)) if (byTx && Object.hasOwn(byTx, tx)) perNode[id] = readTransfer(byTx[tx], claim.logIndex);
   const verdict = decide(perNode, {
     same: sameTransfer,
     blockOf: (v) => v.block,
-    minFinal,
+    finalHead,
     matchesClaim: (v) =>
       v.status === "0x1" && !!v.transfer &&
       v.transfer.token === lc(claim.token) && v.transfer.to === lc(claim.to) && v.transfer.value === claim.value &&
@@ -187,7 +218,7 @@ export function tieBalance(perNode, expected, { tolerance = 0n } = {}) {
     same: (a, b) => a.value === b.value,
     matchesClaim: (v) => expected === null || (v.value >= expected - tolerance && v.value <= expected + tolerance),
     blockOf: null,
-    minFinal: null,
+    finalHead: null,
   });
 }
 

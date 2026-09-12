@@ -51,10 +51,10 @@ function allLines() {
 }
 
 function periodText() {
-  if (!ctx.minFinal) return "not read yet";
+  if (!ctx.finalHead) return "not read yet";
   const t = ctx.headRef?.time ? isoMin(ctx.headRef.time) : "";
   const from = ctx.baseline ? `transfers from block ${groupInt(ctx.baseline.from_block)} (${String(ctx.baseline.from_block_time ?? "").slice(0, 10)})` : "transfers";
-  return `${from} to block ${groupInt(ctx.minFinal)} (finalized${t ? ", " + t : ""}); receipts: every one in the log`;
+  return `${from} to block ${groupInt(ctx.finalHead)} (finalized${t ? ", " + t : ""}); receipts: every one in the log`;
 }
 
 /** The problems this read recorded for one schedule: a schedule that threw produced no lines, and says so. */
@@ -290,7 +290,7 @@ function viewLegend() {
     table(
       ["mark", "means"],
       [
-        [glyph(STATE.TIED), "tied: at least two nodes run by different operators agree with each other and with the claim, below the lower of their finalized heads (mainnet.base.org and Tenderly vote; dRPC is asked when one of them does not answer). On A-log and D-2 the ✓ is a proof this browser checked, with no chain read, and their drawers say so"],
+        [glyph(STATE.TIED), "tied: at least two nodes run by different operators agree with each other and with the claim, in a block at least two archive operators call finalized (mainnet.base.org and Tenderly vote; dRPC is asked when one of them does not answer). On A-log and D-2 the ✓ is a proof this browser checked, with no chain read, and their drawers say so"],
         [glyph(STATE.BROKEN), "a break: the sources agree with each other, and not with the claim (two nodes against a registry figure; or, in A-log, a proof against the witness's record)"],
         [glyph(STATE.BLIND), "not a reading: the registry's own figure is not a reading by its own published rule, so this page read the chain instead"],
         [glyph(STATE.UNREAD), "not read, always with the reason. ½ means read once, not tied; ≠ means the nodes disagree. It never means not there."],
@@ -301,6 +301,13 @@ function viewLegend() {
         [glyph("forgery"), "a forgery exhibit: do not pay"],
       ]
     )
+  );
+  // The ⟨U+…⟩ tokens now show up in quoted prose too, not only in token symbols, so the legend says what they are.
+  s.append(
+    el("p", {
+      class: "muted",
+      text: 'Quoted text from citizens, nodes and the indexer is isolated and never becomes markup. Where a character changes how the text reads without being visible, or a lookalike letter sits inside an otherwise Latin word (the Cyrillic С in "USDС"), this page prints the code point in its place, like ⟨U+0421 CYRILLIC CAPITAL LETTER ES⟩. A word written entirely in one script is left as written. Token symbols are read more strictly: there, every character outside plain ASCII is printed that way.',
+    })
   );
   s.append(el("h3", { text: "Check this page in 60 seconds" }));
   const fields = document.querySelectorAll("input,textarea,select,form,[contenteditable],[role=textbox],[role=searchbox]").length;

@@ -117,7 +117,7 @@ export async function recipeHash(payload, recipe) {
  * Pure part of schedule A for one receipt: given the event, its proof, the binding record and receipts read at
  * the nodes, produce the line. Exported so tests and window.tickTie can feed it corrupted copies.
  */
-export async function receiptLine({ event, proof, binding, receipts, minFinal, registryKey, readAt }) {
+export async function receiptLine({ event, proof, binding, receipts, finalHead, registryKey, readAt }) {
   const d = parseReceiptDetail(event.detail);
   const r = binding?.receipt ?? null;
   const logSteps = [];
@@ -158,7 +158,7 @@ export async function receiptLine({ event, proof, binding, receipts, minFinal, r
     blockHash: (p ? p.block_hash : r?.block_hash) ?? null,
   };
   let tie = { state: STATE.UNREAD, mark: "?", why: "not read: the binding record did not load", perNode: {} };
-  if (binding && value !== null && isTxHash(d.tx) && receipts) tie = tieTransfer(claim, receipts, minFinal);
+  if (binding && value !== null && isTxHash(d.tx) && receipts) tie = tieTransfer(claim, receipts, finalHead);
 
   // The record's own top-level fields must say what its sealed payload says; a record that contradicts itself is
   // not sealed, whatever Base shows.
@@ -242,7 +242,7 @@ export async function scheduleA(ctx) {
   const receipts = txs.length ? await receiptsAt(txs) : null;
   const lines = [await pWitness];
   for (const { e, d } of parsed) {
-    lines.push(await receiptLine({ event: e, proof: proofs[e.id], binding: d ? bindings[d.binding] : null, receipts, minFinal: ctx.minFinal, registryKey: ctx.registryKey, readAt: ctx.readAt }));
+    lines.push(await receiptLine({ event: e, proof: proofs[e.id], binding: d ? bindings[d.binding] : null, receipts, finalHead: ctx.finalHead, registryKey: ctx.registryKey, readAt: ctx.readAt }));
   }
   ctx.receiptTxs = new Set(txs.map(lc));
   ctx.samples = { ...(ctx.samples ?? {}), receipts }; // kept so the controls can re-run ties on live data

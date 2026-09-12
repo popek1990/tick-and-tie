@@ -101,8 +101,8 @@ export async function scheduleD(ctx) {
   const readAt = ctx.readAt;
   if (!t) return [line({ ref: "D-1", schedule: "D", state: STATE.UNREAD, why: "not read: GET /treasury did not answer", title: "the books" })];
 
-  // D-1 and D-3 share one read: the treasury's USDC at min(finalized), at two nodes.
-  const [usdcNow] = await balancesAt([{ token: USDC, holder: TREASURY }], ctx.minFinal);
+  // D-1 and D-3 share one read: the treasury's USDC at the finalized head two operators agree on, at two nodes.
+  const [usdcNow] = await balancesAt([{ token: USDC, holder: TREASURY }], ctx.finalHead);
   const now = agreedValue(usdcNow.perNode);
   const d1 = tieBalance(usdcNow.perNode, null);
   lines.push(
@@ -114,7 +114,7 @@ export async function scheduleD(ctx) {
       mark: d1.mark,
       why: d1.why,
       title: "spendable USDC in the treasury · docket row treasury-governance (a)",
-      sentence: [now !== null ? `The treasury holds ${formatAsset(now, USDC)} at block ${groupInt(ctx.minFinal)}, read at two nodes. A USDC balance needs no claim step; moving it needs the treasury's key.` : "The treasury's USDC balance was not read at two nodes."],
+      sentence: [now !== null ? `The treasury holds ${formatAsset(now, USDC)} at block ${groupInt(ctx.finalHead)}, read at two nodes. A USDC balance needs no claim step; moving it needs the treasury's key.` : "The treasury's USDC balance was not read at two nodes."],
       says: [
         { label: "docket", value: "treasury-governance (a): a non-maintainer third party can recompute, from public methods only, which USDC in the published treasury is spendable without a further claim step", source: "GET /api/docket" },
         { label: "wallet", value: t.wallet?.address ?? TREASURY, source: "GET /treasury → wallet; GET /api/official → treasury", readAt },
@@ -188,12 +188,12 @@ export async function scheduleD(ctx) {
   let liveIn = 0n;
   let liveOut = 0n;
   let liveOk = false;
-  if (base && ctx.minFinal > base.to_block) {
+  if (base && ctx.finalHead > base.to_block) {
     const r = await indexerPages(`/api/v2/addresses/${TREASURY}/token-transfers?type=ERC-20`, base.to_block, 3);
     for (const it of r.items) {
       const block = Number(it.block_number ?? 0);
       const token = lc(it.token?.address_hash ?? it.token?.address);
-      if (block <= base.to_block || block > ctx.minFinal || token !== USDC) continue;
+      if (block <= base.to_block || block > ctx.finalHead || token !== USDC) continue;
       const v = parseAtomic(it.total?.value) ?? 0n;
       if (lc(it.to?.hash) === TREASURY) liveIn += v;
       if (lc(it.from?.hash) === TREASURY) {
@@ -214,7 +214,7 @@ export async function scheduleD(ctx) {
       same: (a, b) => a.block === b.block && a.blockHash === b.blockHash && a.transfer?.value === b.transfer?.value && a.transfer?.to === b.transfer?.to,
       matchesClaim: (v) => v.status === "0x1" && v.transfer?.from === TREASURY && v.transfer?.to === o.to && v.transfer?.value === o.value && v.transfer?.token === o.token,
       blockOf: (v) => v.block,
-      minFinal: ctx.minFinal,
+      finalHead: ctx.finalHead,
     });
     const anyReceipt = Object.values(receipts).map((byTx) => byTx[o.tx]).find((a) => a && !a.notRead);
     const how = mechanism(anyReceipt, o);
@@ -239,12 +239,12 @@ export async function scheduleD(ctx) {
         : ["The treasury's outflows were not read on this visit: the page's own baseline file did not load, so this is not a count of zero."],
       says: [
         { label: "the books' rule", value: "Spent only when earned dollars are exhausted, with the same public ledger line as everything else.", source: "GET /treasury → spending_policy.waterfall[1].rule", readAt },
-        { label: "window", value: base ? `from block ${groupInt(base.from_block)} (${base.from_block_time}) to ${groupInt(ctx.minFinal)}` : "baseline not loaded", source: "data/baseline.json + live", kind: "file" },
+        { label: "window", value: base ? `from block ${groupInt(base.from_block)} (${base.from_block_time}) to ${groupInt(ctx.finalHead)}` : "baseline not loaded", source: "data/baseline.json + live", kind: "file" },
       ],
       shows: items.map((i) => ({ node: `${i.tie.mark} block ${groupInt(i.block)}`, text: `${formatAsset(i.value, i.token) ?? String(i.value)} → ${short(i.to)} · ${i.match ? `row ${i.match.row.id}` : i.conversion ? "a conversion" : "no row names it"} · ${i.tie.why}` })),
       extra: { items, named, conversions, unnamed },
       notVerified: ["purpose: this page does not read purpose", "who holds the treasury key: not read here", "anything outside USDC, 1F916 and WETH transfers: native ETH and other tokens are not listed", ...liveNotes],
-      cite: `D-4 treasury outflows ${items.length} · named by a row ${named.length} · conversions ${conversions.length} · named by no row ${unnamed.length} · through block ${ctx.minFinal}`,
+      cite: `D-4 treasury outflows ${items.length} · named by a row ${named.length} · conversions ${conversions.length} · named by no row ${unnamed.length} · through block ${ctx.finalHead}`,
     })
   );
 
@@ -268,10 +268,10 @@ export async function scheduleD(ctx) {
     const foots = recordedStart !== null && recordedEnd !== null && recordedStart + inflow - outflow === recordedEnd;
     const endNow = agreedValue(atEnd.perNode);
     // The live stretch after the baseline: true = it foots, false = it does not, null = it was not checked. Only
-    // "nothing to check" (the baseline reaches min(finalized)) or a stretch that foots can leave the line tied.
-    const liveNeeded = ctx.minFinal > base.to_block;
+    // "nothing to check" (the baseline reaches that finalized head) or a stretch that foots can leave the line tied.
+    const liveNeeded = ctx.finalHead > base.to_block;
     const liveFoots = endNow !== null && now !== null && liveOk ? endNow + liveIn - liveOut === now : null;
-    if (liveNeeded && liveFoots === null) liveNotes.push(`the ${groupInt(ctx.minFinal - base.to_block)} blocks after the baseline were not footed: ${endNow === null || now === null ? "a balance was not read at two nodes" : "the indexer's list did not cover them"}`);
+    if (liveNeeded && liveFoots === null) liveNotes.push(`the ${groupInt(ctx.finalHead - base.to_block)} blocks after the baseline were not footed: ${endNow === null || now === null ? "a balance was not read at two nodes" : "the indexer's list did not cover them"}`);
     const ok = foots && tieStart.state === STATE.TIED && tieEnd.state === STATE.TIED;
     const liveGood = !liveNeeded || liveFoots === true;
     lines.push(
@@ -283,7 +283,7 @@ export async function scheduleD(ctx) {
         why: ok ? (liveGood ? "start + in − out = end, both ends tie at two nodes, and the blocks since foot too" : liveFoots === false ? "the baseline foots; the live stretch does not foot on the indexer's list" : "the baseline foots; the live stretch after it was not footed on this read") : `${tieStart.why}; ${tieEnd.why}`,
         title: "the footing: the treasury's USDC flows add up to its balance",
         sentence: [
-          `Start ${recordedStart !== null ? formatAsset(recordedStart, USDC) : "?"} + in ${formatAsset(inflow, USDC)} − out ${formatAsset(outflow, USDC)} = ${recordedStart !== null ? formatAsset(recordedStart + inflow - outflow, USDC) : "?"}; the wallet held ${recordedEnd !== null ? formatAsset(recordedEnd, USDC) : "?"} at block ${groupInt(base.to_block)}. ${foots ? "It foots." : "It does not foot."}${liveFoots === null ? "" : liveFoots ? ` The ${groupInt(ctx.minFinal - base.to_block)} blocks since also foot.` : ` The ${groupInt(ctx.minFinal - base.to_block)} blocks since do not foot on the indexer's list.`}`,
+          `Start ${recordedStart !== null ? formatAsset(recordedStart, USDC) : "?"} + in ${formatAsset(inflow, USDC)} − out ${formatAsset(outflow, USDC)} = ${recordedStart !== null ? formatAsset(recordedStart + inflow - outflow, USDC) : "?"}; the wallet held ${recordedEnd !== null ? formatAsset(recordedEnd, USDC) : "?"} at block ${groupInt(base.to_block)}. ${foots ? "It foots." : "It does not foot."}${liveFoots === null ? "" : liveFoots ? ` The ${groupInt(ctx.finalHead - base.to_block)} blocks since also foot.` : ` The ${groupInt(ctx.finalHead - base.to_block)} blocks since do not foot on the indexer's list.`}`,
         ],
         shows: [
           ...Object.entries(atStart.perNode).map(([node, v]) => ({ node: `${node} @${base.from_block}`, text: v.notRead ?? String(v.value) })),

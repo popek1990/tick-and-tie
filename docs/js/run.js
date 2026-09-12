@@ -19,7 +19,7 @@ import { isoSec, fromMs, short, lc, isLookalike, TOKEN } from "./codec.js";
 export const LOCAL = Object.freeze({ baseline: "data/baseline.json", bindings: "data/bindings.json", receipts: "data/receipts.json" });
 
 export function newRun() {
-  const ctx = { docs: {}, minFinal: null, headRef: null, baseline: null, bindingsIndex: null, readAt: isoSec(new Date()), registryKey: null };
+  const ctx = { docs: {}, finalHead: null, headRef: null, baseline: null, bindingsIndex: null, readAt: isoSec(new Date()), registryKey: null };
   const detailCache = new Map();
   ctx.listingDetail = (id) => {
     if (!detailCache.has(id)) detailCache.set(id, net.registry(`/api/listings/${id}`));
@@ -64,10 +64,11 @@ export async function runAll(run, { loadLocal = (f) => net.local(f), status = ()
   });
   const pTreasury = doc("treasury", net.registry("/treasury"));
   const pHeads = heads().then((h) => {
-    ctx.minFinal = h.minFinal;
+    ctx.finalHead = h.finalHead;
     ctx.heads = h;
     ctx.headRef = ["base", "tenderly", "drpc"].map((id) => h.per[id]).find((v) => v?.number) ?? null;
-    if (!ctx.minFinal) problems.push("no archive node answered the finalized head: chain lines below read as not read");
+    if (!ctx.finalHead) problems.push("no archive node answered the finalized head: chain lines below read as not read");
+    for (const p of h.problems ?? []) problems.push(p);
     running.delete("Base's finalized head");
     showRunning();
   });
@@ -199,10 +200,10 @@ export async function controls(run) {
     const a = (results.A ?? []).find((l) => l.state === STATE.TIED && l.extra?.claim);
     if (a && ctx.samples?.receipts) {
       const claim = a.extra.claim;
-      add(`${a.ref} tie, as served`, STATE.TIED, tieTransfer(claim, ctx.samples.receipts, ctx.minFinal).state);
-      add(`${a.ref} tie, amount + 1 atomic unit`, STATE.BROKEN, tieTransfer({ ...claim, value: claim.value + 1n }, ctx.samples.receipts, ctx.minFinal).state);
-      add(`${a.ref} tie, wrong token`, STATE.BROKEN, tieTransfer({ ...claim, token: TOKEN }, ctx.samples.receipts, ctx.minFinal).state);
-      add(`${a.ref} tie, log index + 1`, STATE.BROKEN, tieTransfer({ ...claim, logIndex: claim.logIndex + 1 }, ctx.samples.receipts, ctx.minFinal).state);
+      add(`${a.ref} tie, as served`, STATE.TIED, tieTransfer(claim, ctx.samples.receipts, ctx.finalHead).state);
+      add(`${a.ref} tie, amount + 1 atomic unit`, STATE.BROKEN, tieTransfer({ ...claim, value: claim.value + 1n }, ctx.samples.receipts, ctx.finalHead).state);
+      add(`${a.ref} tie, wrong token`, STATE.BROKEN, tieTransfer({ ...claim, token: TOKEN }, ctx.samples.receipts, ctx.finalHead).state);
+      add(`${a.ref} tie, log index + 1`, STATE.BROKEN, tieTransfer({ ...claim, logIndex: claim.logIndex + 1 }, ctx.samples.receipts, ctx.finalHead).state);
     } else skipped.push("a receipt tie (4): no receipt tied at two nodes on this read, so there was nothing to corrupt");
     const cs = ctx.samples?.consistency;
     if (cs && cs.proof.length) {

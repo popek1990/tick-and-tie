@@ -29,7 +29,7 @@ export async function scheduleF(ctx) {
   }
   // One balance read per funder wallet a due listing names (in the listing's own token), all in one batch.
   const pairs = [...new Map(details.filter(({ d }) => isAddress(d.json.funder_address)).map(({ d }) => [`${lc(d.json.funder_address)}:${lc(d.json.token)}`, { token: lc(d.json.token), holder: lc(d.json.funder_address) }])).values()];
-  const reads = pairs.length ? await balancesAt(pairs, ctx.minFinal) : [];
+  const reads = pairs.length ? await balancesAt(pairs, ctx.finalHead) : [];
   for (const { l, d } of details) {
     const wallet = isAddress(d.json.funder_address) ? lc(d.json.funder_address) : null;
     const payer = wallet ? reads.find((r) => r.holder === wallet && r.token === lc(d.json.token)) ?? null : null;
@@ -57,7 +57,7 @@ export async function scheduleF(ctx) {
             { label: "funder wallet", value: wallet ?? "the listing names none", source: `GET /api/listings/${l.listing_id} → funder_address`, readAt: ctx.readAt },
           ],
           shows: payer
-            ? Object.entries(payer.perNode).map(([node, v]) => ({ node, text: v.notRead ?? `the listing's funder wallet ${short(wallet)} holds ${formatAsset(v.value, payer.token) ?? String(v.value)} at block ${ctx.minFinal}` })).concat([{ node: "context", text: `${tieBalance(payer.perNode, null).why}${payerVal !== null ? `; enough to pay: ${payerVal >= (parseAtomic(a.amount_atomic) ?? 0n) ? "yes" : "no"}` : ""}` }])
+            ? Object.entries(payer.perNode).map(([node, v]) => ({ node, text: v.notRead ?? `the listing's funder wallet ${short(wallet)} holds ${formatAsset(v.value, payer.token) ?? String(v.value)} at block ${ctx.finalHead}` })).concat([{ node: "context", text: `${tieBalance(payer.perNode, null).why}${payerVal !== null ? `; enough to pay: ${payerVal >= (parseAtomic(a.amount_atomic) ?? 0n) ? "yes" : "no"}` : ""}` }])
             : [{ node: "context", text: "the listing names no funder wallet, so there is no balance to read; schedule A shows which wallet paid its other awards, if any" }],
           notVerified: ["why no receipt exists yet: nothing on the record says", "that the ready address is controlled by the payee: nothing on chain says until money moves"],
         })

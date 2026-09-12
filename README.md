@@ -43,7 +43,7 @@ The marks:
 
 | Mark | Means |
 |---|---|
-| ✓ tied | at least two nodes run by different operators agree with each other and with the claim, below the lower of their finalized heads. On A-log and D-2 the ✓ is a proof checked in this browser with no chain read, and their drawers say so |
+| ✓ tied | at least two nodes run by different operators agree with each other and with the claim, in a block at least two archive operators call finalized. On A-log and D-2 the ✓ is a proof checked in this browser with no chain read, and their drawers say so |
 | ✗ break | the sources agree with each other, and not with the claim |
 | ◐ not a reading | the registry's own figure is not a reading by its own published rule, so the page read the chain instead |
 | ? not read | always with the reason. ½ means one node answered; ≠ means the nodes disagree. It never means "not there" |
@@ -74,8 +74,9 @@ THE CHAIN SHOWS (per node), THE SOCIETY'S LOG (each step: held, did not hold, or
   then uses the sealed payload's fields; a record whose top-level fields contradict its own payload is not sealed.
 - **Base.** `eth_getTransactionReceipt` for that tx at mainnet.base.org (Coinbase) and Tenderly; dRPC is asked only
   for what one of them did not answer. The Transfer at that log index must have the claimed token, sender, recipient
-  and amount, `status 0x1`, the same block hash at both nodes, and a block at or below the lower of their finalized
-  heads.
+  and amount, `status 0x1`, the same block hash at both nodes, and a block at or below the highest one at least two
+  archive operators call finalized — the second highest of their heads, not the lowest, so one node stuck in the
+  past cannot age the whole reading and one running ahead cannot pull a younger block into a tick.
 - **The observer's own rule.** Schedule C walks each wallet the observer watches and classifies every transfer the
   way `src/observer.ts` `classifyTransfer` does (commit c0c1afab; the rule is written again here, not copied, and
   held to it case by case in the tests). Payments after each mark are the ones the rail cannot count yet; payments
@@ -170,7 +171,7 @@ await tickTie.verifyCheckpoint(s.registryKey, s.checkpoint.log, tickTie.flip(s.c
 await tickTie.controls();                                                                               // every control, re-run
 ```
 
-`npm test` runs 50 tests offline: keccak known answers, the 11 sealed treasury rows folding to the signed ledger
+`npm test` runs 52 tests offline: keccak known answers, the 11 sealed treasury rows folding to the signed ledger
 root, event inclusion and consistency proofs from real checkpoints, all 8 receipts tying on recorded node answers
 with their negative controls, the observer's rule case by case, the census counts, and the request pacing. A dozen
 of them exist to stop one particular kind of lie: that a read which did not happen is printed as a fact. A receipt

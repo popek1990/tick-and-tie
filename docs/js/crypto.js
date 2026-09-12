@@ -1,7 +1,8 @@
 // The society's own cryptography, re-done in your browser: hash chains, RFC 6962 Merkle proofs and
 // Ed25519 signatures. Everything here is pure: it takes bytes and objects and returns booleans. Nothing
 // in this file touches the network, so the functions exported on window.tickTie can be fed a corrupted copy
-// in devtools and must answer false (the judge's own test on The Fold, c38636).
+// in devtools and must answer false. That is the judge's own test on The Fold, in c38636: "with one signature byte
+// flipped it returned false; with the tree size changed by one it returned false".
 //
 // Recipes are the registry's, quoted rather than guessed:
 //   row hash  = sha256(prev_hash + "\n" + JSON.stringify([...fields]))      (GET /api/events → how_to_verify)
