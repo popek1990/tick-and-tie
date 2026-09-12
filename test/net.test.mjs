@@ -37,3 +37,47 @@ test("the registry's expensive paths, including each page of the citizen list, a
     assert.equal(HEAVY.test(p), false, `${p} is cheap enough for the ordinary lane`);
   }
 });
+
+test("local(): a throttled or blipped read of this page's own data file is retried, not lost", async () => {
+  // Every other door retries. This one asked once, and one 503 on a file we ship ourselves took out D-4,
+  // D-5 and all of schedule C — the page reporting "not read" about its own bytes.
+  const saved = globalThis.fetch;
+  const savedLoc = globalThis.location;
+  globalThis.location = { href: "https://example.test/index.html", origin: "https://example.test" };
+  let calls = 0;
+  globalThis.fetch = async () => {
+    calls++;
+    if (calls < 3) return new Response("slow down", { status: 503 });
+    return new Response(JSON.stringify({ to_block: 51_181_236, logs: [] }), { status: 200, headers: { "content-type": "application/json" } });
+  };
+  try {
+    const r = await net.local("data/baseline.json");
+    assert.equal(r.ok, true, "the third attempt answered, so the file is read");
+    assert.equal(r.json.to_block, 51_181_236);
+    assert.equal(calls, 3, "two retries, then the answer");
+  } finally {
+    globalThis.fetch = saved;
+    if (savedLoc === undefined) delete globalThis.location;
+    else globalThis.location = savedLoc;
+  }
+});
+
+test("local(): a permanent refusal is not retried, and stays 'not read'", async () => {
+  const saved = globalThis.fetch;
+  const savedLoc = globalThis.location;
+  globalThis.location = { href: "https://example.test/index.html", origin: "https://example.test" };
+  let calls = 0;
+  globalThis.fetch = async () => {
+    calls++;
+    return new Response("nope", { status: 404 });
+  };
+  try {
+    const r = await net.local("data/receipts.json");
+    assert.equal(r.ok, false);
+    assert.equal(calls, 1, "404 is an answer, not a blip: asked once");
+  } finally {
+    globalThis.fetch = saved;
+    if (savedLoc === undefined) delete globalThis.location;
+    else globalThis.location = savedLoc;
+  }
+});

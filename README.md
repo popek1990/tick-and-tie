@@ -182,7 +182,7 @@ passed.
 
 ## Server cost
 
-A cold load made 33 to 35 GETs to 1f916.ai on 2026-09-12, and never walks `/api/payouts`. The count moves with
+A cold load of the published page made 30 GETs to 1f916.ai on 2026-09-12, twice, and never walks `/api/payouts`. The count moves with
 the rail: the expensive paths (a listing's record, read for listing 23 and for each listing with an award due, and
 each page of the citizen list) go one at a time, 3.5 seconds apart with one retry after eleven, because the registry
 refuses bursts of them. So a day with more awards due is a slower, heavier read. About 32 to 38 JSON-RPC reads go to
@@ -209,7 +209,8 @@ network panel is the independent check.
   a separate implementation for a different design, and no code is copied.
 - The typefaces are [Fraunces](https://github.com/undercasetype/Fraunces) by Undercase Type and
   [JetBrains Mono](https://github.com/JetBrains/JetBrainsMono) by JetBrains, both under the SIL Open Font License;
-  the licence texts ship beside them in `docs/fonts/`.
+  the licence texts ship beside them in `docs/fonts/`, and `NOTICE` lists them. `LICENSE` is the MIT text and
+  nothing else, so a machine reading it gets one answer.
 
 ## Conflicts
 

@@ -225,17 +225,30 @@ export async function scheduleD(ctx) {
   const conversions = items.filter((i) => !i.match && i.conversion);
   const unnamed = items.filter((i) => !i.match && !i.conversion);
   const anyUnread = items.some((i) => i.tie.state !== STATE.TIED);
+  // The baseline stops at base.to_block; everything after it is found on the indexer's list. If that list did
+  // not arrive, the outflows since the baseline are missing from `items` — so a ✓ here would be a tick on a
+  // list we know is short. Sibling D-5 already refuses to tie in that case; this line has to refuse too.
+  const sinceUnlisted = !!base && ctx.finalHead > base.to_block && !liveOk;
   lines.push(
     line({
       ref: "D-4",
       schedule: "D",
       route: "#/d/4",
       // No baseline is not an empty list of outflows: it is no list at all, and says so.
-      state: !base ? STATE.UNREAD : items.length === 0 ? STATE.NIL : anyUnread ? STATE.UNREAD : STATE.TIED,
-      why: !base ? "not read: data/baseline.json did not load, so the outflows were never listed" : anyUnread ? "at least one outflow was not tied at two nodes; see its row" : "every outflow listed ties at two nodes",
+      state: !base || sinceUnlisted ? STATE.UNREAD : items.length === 0 ? STATE.NIL : anyUnread ? STATE.UNREAD : STATE.TIED,
+      why: !base
+        ? "not read: data/baseline.json did not load, so the outflows were never listed"
+        : sinceUnlisted
+          ? `not read: the indexer's list did not cover the ${groupInt(ctx.finalHead - base.to_block)} blocks after the baseline, so any outflow since then is missing from this list`
+          : anyUnread
+            ? "at least one outflow was not tied at two nodes; see its row"
+            : "every outflow listed ties at two nodes",
       title: "outflows from the treasury wallet",
       sentence: base
-        ? [`${items.length} out · ${named.length} named by a row · ${conversions.length} conversion${conversions.length === 1 ? "" : "s"} · ${unnamed.length} named by no row.`]
+        ? [
+            `${items.length} out · ${named.length} named by a row · ${conversions.length} conversion${conversions.length === 1 ? "" : "s"} · ${unnamed.length} named by no row.` +
+              (sinceUnlisted ? ` This is not the whole list: the ${groupInt(ctx.finalHead - base.to_block)} blocks after the baseline were not listed on this read, so an outflow since then would not appear above.` : ""),
+          ]
         : ["The treasury's outflows were not read on this visit: the page's own baseline file did not load, so this is not a count of zero."],
       says: [
         { label: "the books' rule", value: "Spent only when earned dollars are exhausted, with the same public ledger line as everything else.", source: "GET /treasury → spending_policy.waterfall[1].rule", readAt },

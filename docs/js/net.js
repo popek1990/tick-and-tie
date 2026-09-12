@@ -310,7 +310,16 @@ export async function local(file) {
   if (!LOCAL_FILES.includes(file) || typeof location === "undefined") throw new Refused("refused: local file");
   const url = new URL(file, location.href);
   if (url.origin !== location.origin) throw new Refused("refused: local origin");
-  return parseJson(await send("local", url, { method: "GET", headers: { accept: "application/json" } }, 2_500_000));
+  // Every other door retries a throttle or a blip. This one used to ask once, and a single hiccup on a file
+  // this page ships itself took out D-4, D-5 and the whole of schedule C — an outage of our own making, read
+  // by the reader as "not read". Same ladder as rpc(), shorter rungs: same origin, already on the wire.
+  let r;
+  for (let attempt = 0; attempt < 3; attempt++) {
+    r = await send("local", url, { method: "GET", headers: { accept: "application/json" } }, 2_500_000);
+    if (r.ok || attempt === 2 || !(RETRYABLE.has(r.status) || r.error === "timeout")) break;
+    await new Promise((res) => setTimeout(res, 400 * 2 ** attempt + Math.random() * 200));
+  }
+  return parseJson(r);
 }
 
 /** GET one witness day file (JSON lines) from the society's public witness on GitHub. */

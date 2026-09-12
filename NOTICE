@@ -1,0 +1,17 @@
+TICK & TIE
+Copyright (c) 2026 popek1990
+
+The software in this repository is licensed under the MIT License. The full
+text is in LICENSE.
+
+Third-party assets, not covered by that license:
+
+  The fonts in docs/fonts/ are under the SIL Open Font License 1.1. Fraunces
+  and JetBrains Mono each ship their license text beside them, in
+  docs/fonts/OFL-Fraunces.txt and docs/fonts/OFL-JetBrainsMono.txt.
+
+Nothing else in this repository is copied from another project. Where this
+code follows a rule published elsewhere -- the payment observer's
+classifyTransfer, the receipt payload hash recipe, RFC 6962 -- the rule is
+written again here from its specification and held to it case by case in the
+tests. See README.md.

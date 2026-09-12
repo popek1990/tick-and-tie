@@ -449,6 +449,10 @@ window.tickTie = Object.freeze({
   },
 });
 
+// Draw the shell before the first read lands. Without this, main#view stays empty for as long as the registry
+// takes to answer, and an empty page is indistinguishable from a broken one.
+render();
+
 runAll(run, { status, onUpdate })
   .then(() => status(summary(run)))
   .catch((e) => {

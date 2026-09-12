@@ -257,6 +257,29 @@ test("D: without the committed baseline the books say not read, and D-5 stays on
   assert.match(d5.why, /not read: data\/baseline\.json did not load/);
 });
 
+test("D-4 refuses to tie when the indexer never listed the blocks after the baseline", async () => {
+  // The baseline stops short of the finalized head, so the outflows since then can only come from the
+  // indexer. With the indexer refusing, an empty list is not a list: D-4 must say not read, and must not
+  // print "nothing to tie". Before the fix this line read NIL — a mark on a list that was never fetched.
+  const treasury = { entries: [], onchain_cents: null, onchain_checked_at: null, assets: {} };
+  const baseline = { from_block: 49_500_000, from_block_time: "2026-07-01T00:00:00Z", to_block: 51_181_236, built_at: "2026-09-11T00:00:00Z", method: "eth_getLogs", logs: [] };
+  const ctx = { docs: { treasury, checkpoint: { checkpoints: [] } }, baseline, finalHead: 51_400_000, headRef: null, readAt: "test", registryKey: null };
+  const saved = globalThis.fetch;
+  globalThis.fetch = async () => new Response("upstream unavailable", { status: 503 });
+  let lines;
+  try {
+    lines = await scheduleD(ctx);
+  } finally {
+    globalThis.fetch = saved;
+  }
+  const d4 = lines.find((l) => l.ref === "D-4");
+  assert.ok(d4, "D-4 is on the page");
+  assert.equal(d4.state, STATE.UNREAD, "an unfetched list is not an empty list");
+  assert.notEqual(d4.mark, "—", "never 'nothing to tie' when the listing step did not happen");
+  assert.match(d4.why, /the indexer's list did not cover the 218,764 blocks after the baseline/);
+  assert.match(d4.sentence.join(""), /This is not the whole list/);
+});
+
 test("F's bar counts clocks and not-read lines apart, in one place for page and terminal", () => {
   const l = (state) => ({ state });
   assert.deepEqual(footingF([l(STATE.UNREAD), l("clock"), l("clock")]), { clocks: 2, unread: 1 });
