@@ -205,11 +205,10 @@ refuses bursts of them. So a day with more awards due is a slower, heavier read.
 queues, not one: a listing or binding record on one, the citizen list on the other, so the population line at the
 top of the page does not wait behind the detail reads. About 32 to 38 JSON-RPC reads go to
 Base nodes, paced per node with a budget and a circuit breaker; about 10 GETs go to Blockscout and one or two to
-GitHub (the witness day file). Timings, 2026-09-12, served from this repo over loopback so only the registry and
-the Base nodes are remote: the first item of Today lands in about two seconds, the population line and its field of
-marks at about eight (three pages of the citizen list, 3.5 seconds apart), and the whole reading finished in about
-twelve, most of that spent waiting out the slow lanes. The published page measured 15 seconds end to end before
-these two queues were split, on the same day. The
+GitHub (the witness day file). Timings of the published page, 2026-09-12 16:06Z: the first item of Today landed at
+2.4 seconds, the population line and its field of marks at 8.2 (three pages of the citizen list, 3.5 seconds
+apart), and the whole reading finished at 11.8, most of that spent waiting out the slow lanes. Before the two slow
+queues were split, the same page took 15.3 seconds and did not show the population line until 15.3. The
 masthead prints the counts for the read you are looking at, and they are the numbers to trust over these. The tape
 (`#/tape`) lists every request the page made, with method, origin, path, status, bytes and time. Your browser's
 network panel is the independent check.

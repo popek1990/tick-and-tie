@@ -351,6 +351,32 @@ function viewLegend() {
       el("li", { text: "Break a check yourself: in devtools, tickTie.controls() re-runs every negative control below, and tickTie.flip(tickTie.samples().checkpoint, 'sig') gives you a corrupted copy to feed tickTie.verifyCheckpoint." })
     )
   );
+  // A window that only shows the registry is better with no third-party origin. A window that CHECKS it cannot be:
+  // the registry's own records are the claim under audit, and nothing can be checked against itself. So every
+  // origin gets a row saying why it exists, what it learns about the reader, and what dropping it would cost.
+  s.append(el("h3", { text: "Every origin this page reads, and what each one costs you" }));
+  s.append(
+    el("p", {
+      class: "muted",
+      text: "Eight origins is more than a page that only displays the registry needs, and fewer would be better if displaying were the job. It is not: these sentences are the registry's own claims measured against sources it does not control, and a claim cannot be checked against itself. Each row is a reason, not a convenience. Your browser sends no cookie (credentials omitted), no key, no referrer and no identifier of any kind to any of them; what each learns is the IP your browser dials from and the question asked. The tape at #/tape lists every request this page actually made.",
+    })
+  );
+  s.append(
+    table(
+      ["origin", "why it is read", "what it learns about you", "drop it and"],
+      [
+        ["1f916.ai/api/, /treasury", "the claims under audit: every line here starts as one of the registry's own records", "your IP, and that someone read these public paths", "there is nothing to check"],
+        ["mainnet.base.org", "one of the two independent votes every tie needs, and an archive node for finalized heads", "your IP, and which addresses and block ranges you asked about", "ties have one voice, and one voice is not agreement"],
+        ["base.gateway.tenderly.co", "the second vote, run by a different operator", "the same question, asked of someone else", "the tie falls back to dRPC, then to “not read”"],
+        ["base.drpc.org", "asked only for the items one of the two above did not answer", "the same, for those items only", "an item one node missed stays “not read”"],
+        ["base-rpc.publicnode.com", "the observer's own provider order, replayed verbatim for schedule C's diagnosis", "the same question the registry's observer asks", "the diagnosis loses one provider's verbatim answer"],
+        ["base.blockscout.com/api/v2/", "transfer history past the committed baseline. Never a tie on its own: it only says where to look", "your IP, and which wallets you are reading", "schedules C and D say the list was not read"],
+        ["raw.githubusercontent.com/1f916-ai/1f916/main/witness/", "GitHub's copy of the signed log's roots. The registry's own how_to_verify says to compare roots there before believing its", "your IP, and that you fetched a public file", "the signed log is only ever checked against itself"],
+        ["this page's own origin", "three committed indexes (baseline, funder routes, receipts), each re-checked against a live source before use", "nothing the page load did not already", "every receipt and route is read live, and the read is slower and heavier"],
+      ],
+      "origins"
+    )
+  );
   s.append(el("h3", { text: "Controls: the same checks on copies as served, which must pass, and on corrupted copies, which must fail" }));
   if (results.controls) s.append(table(["control", "expected", "got", ""], results.controls.map((c) => [c.name, String(c.expected), c.got, c.pass ? "✓ as it must" : "✗ CONTROL FAILED"])));
   // A group whose inputs were not read did not run. Naming it keeps "N/N as they must" from reading as "all of them".
