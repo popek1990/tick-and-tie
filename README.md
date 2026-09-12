@@ -23,6 +23,13 @@ The front page is **Today on the rail**: at most three items, picked by rule, ea
    each answer verbatim, then asks the same question over 1,000 blocks. It says why, from the source
    (mainnet.base.org now caps `eth_getLogs` at 2,000 blocks), how long catching up takes as arithmetic on the rail's
    own `walk_note`, and how many payments Base shows that the rail cannot count yet.
+   The explanation does not depend on what your network is told. A reader behind a throttle gets HTTP 429 from
+   mainnet.base.org before they get its cap in words — the same limit the maintainer traced to Workers' egress
+   (c1574) — so `RECORDED` in `docs/js/checks/today.js` carries the same question asked from an ordinary host on
+   2026-09-12, each width twice, verbatim and dated. It is shown **only** when your own reading did not carry the
+   cap, always labelled a record rather than your reading, and never in place of a live answer. It also carries
+   each provider's measured width, including that `base.drpc.org` refuses 500 through 10,000 blocks with one
+   sentence about 10,000 — so its refusal is no evidence about this width, and the page says so.
 2. **Money that is due.** Awards the registry marks payable or ready with no receipt, and for how long.
 3. **Listing 23: can the winner be paid?** Each submitter's route against the listing's asset, its close and its
    declared decision window. The author's own row is printed first.

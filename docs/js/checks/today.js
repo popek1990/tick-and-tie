@@ -13,6 +13,62 @@ import { groupInt, short, plural } from "../codec.js";
 
 const DAY_BLOCKS = 43_200; // one day at BLOCK_SECONDS
 
+/**
+ * A dated reading of the observer's own next question, recorded from an ordinary host on 2026-09-12, each cell
+ * asked twice. It is here because the explanation must not depend on what one reader's network is told: from a
+ * datacenter, or behind a throttle, mainnet.base.org answers HTTP 429 instead of naming its 2,000-block cap —
+ * the same limit the maintainer traced to Cloudflare Workers' egress (c1574) — and a reader who got the 429
+ * would otherwise lose the source citation along with it. Verbatim, and never used in place of a live answer.
+ */
+export const RECORDED = Object.freeze({
+  at: "2026-09-12T15:00Z",
+  query: "eth_getLogs { address: the 1F916 token, all topics }, one window, each width asked twice",
+  wide: Object.freeze({
+    "mainnet.base.org": "HTTP 413, error -32614: eth_getLogs is limited to a 2,000 range",
+    "base-rpc.publicnode.com": "HTTP 403, error -32602: Archive requests require a personal token",
+    "base.gateway.tenderly.co": "HTTP 200, error -32602: invalid params",
+    "base.drpc.org": "HTTP 400, error 35: ranges over 10000 blocks are not supported on free plan",
+  }),
+  caps: Object.freeze({
+    "mainnet.base.org": "2,001 blocks pass and 2,500 refuse, so its cap is on toBlock − fromBlock ≤ 2,000",
+    "base-rpc.publicnode.com": "answers at 5,000, refuses at 10,000",
+    "base.gateway.tenderly.co": "answers at 1,000, refuses at 1,500",
+    "base.drpc.org": "refuses 500, 1,000, 2,000, 5,000 and 10,000 with that same sentence, so its refusal is not about this width at all",
+  }),
+  keyed: "An Infura-backed endpoint, reached through a third party's proxy, answered the same 10,000-block question in 282 ms with 261 logs, twice. This page holds no key and cannot repeat that for you; what the registry's own keyed endpoint answers is still not read.",
+});
+
+/**
+ * Why the observer cannot get two voices, in words that hold whatever this browser was told. `liveBase` is
+ * mainnet.base.org's live answer, or null when it was not reached. Pure, so the reader can call it.
+ */
+export function observerWhy(liveBase) {
+  const out = [
+    "Why, from the source: src/observer.ts asks 10,000 blocks a cycle when a keyed endpoint is set (OBSERVER_BLOCKS_PER_CYCLE_KEYED); its comment says Infura and mainnet.base.org both took that width when measured on 2026-09-08. mainnet.base.org caps eth_getLogs at 2,000 today (uriel met the same cap on 2026-09-10, #4689), so at 10,000 blocks the keyed voice has no second voice. That is what “no two providers agreed (1 answered)” on each mark says.",
+  ];
+  const namesTheCap = /-32614|2,000 range/.test(String(liveBase ?? ""));
+  if (!namesTheCap) {
+    // The reader did not get the cap in words. Say what was recorded, say it is recorded, and say why they may
+    // have been told something else — never present the recording as this visit's reading.
+    out.push(
+      `Your reading above does not carry that cap in words${liveBase ? `: mainnet.base.org told this browser “${String(liveBase).slice(0, 120)}”` : ", because mainnet.base.org was not reached from this browser"}. A throttle answers before a cap does, and HTTP 429 is exactly what the maintainer traced to Workers' egress (c1574). So here is the same question recorded from an ordinary host on ${RECORDED.at}, which is a record and not your reading: ` +
+        Object.entries(RECORDED.wide)
+          .map(([n, s]) => `${n} — ${s}`)
+          .join("; ") +
+        "."
+    );
+  }
+  out.push(
+    `Each provider's own width, measured the same day: ` +
+      Object.entries(RECORDED.caps)
+        .map(([n, s]) => `${n} ${s}`)
+        .join("; ") +
+      ". Asked in pages of 1,000 instead of one question of 10,000, all three of mainnet.base.org, publicnode and tenderly can answer, so two operators could agree again without anyone paying for a node."
+  );
+  out.push(RECORDED.keyed);
+  return out;
+}
+
 /** Item 1, with its replay: needs only GET /api/rail and the finalized head. Null when no mark is behind. */
 export async function observerItem(ctx) {
   const marks = ctx.docs.rail?.observer?.marks ?? [];
@@ -46,11 +102,7 @@ export async function observerItem(ctx) {
   item.body.push(`Its next question (eth_getLogs over ${groupInt(KEYED_RANGE)} blocks from ${short(m.funder_address)}), put just now to its own public providers, in its order:`);
   for (const [node, s] of Object.entries(r.wide)) item.body.push(`${node}: ${s}`);
   item.body.push(`${r.wideAnswered} of ${Object.keys(r.wide).length} answer at that width, and the observer needs two to agree. Over 1,000 blocks: ${Object.entries(r.narrow).map(([n, s]) => `${n} ${s}`).join("; ")}.`);
-  if (/-32614|2,000 range/.test(r.wide.base ?? "")) {
-    item.body.push(
-      "Why, from the source: src/observer.ts asks 10,000 blocks a cycle when a keyed endpoint is set (OBSERVER_BLOCKS_PER_CYCLE_KEYED); its comment says Infura and mainnet.base.org both took that width when measured on 2026-09-08. mainnet.base.org now caps eth_getLogs at 2,000 (its answer above; uriel met the same cap on 2026-09-10, #4689), so the keyed voice has no second voice at 10,000 blocks. That is what “no two providers agreed (1 answered)” on each mark says. Asked in 2,000-block pages, the keyed voice and mainnet.base.org could both answer again."
-    );
-  } else item.body.push("From the source: src/observer.ts asks 10,000 blocks a cycle when a keyed endpoint is set (OBSERVER_BLOCKS_PER_CYCLE_KEYED). The answers above show which public providers accept that width from here, today.");
+  for (const l of observerWhy(r.wide.base)) item.body.push(l);
   const throttled = marks.filter((x) => /HTTP 429/.test(String(x.last_error ?? ""))).length;
   if (throttled) item.body.push(`${throttled} of the marks end their last_error with HTTP 429, the limit the maintainer traced to Cloudflare Workers' egress at mainnet.base.org on 2026-08-07 (c1574). last_error keeps only the last provider's message, and this browser does not share that egress.`);
   const cycle = cycleMinutesOf(ctx.docs.rail?.observer?.walk_note);

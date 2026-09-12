@@ -11,6 +11,7 @@ import { censusOf, censusHeadline } from "../docs/js/checks/census.js";
 import { foldExhibits } from "../docs/js/checks/forgeries.js";
 import { firstWitnessed } from "../docs/js/checks/receipts.js";
 import { scheduleF } from "../docs/js/checks/clocks.js";
+import { observerWhy, RECORDED } from "../docs/js/checks/today.js";
 import { linkHref, saysKind, el } from "../docs/js/ui.js";
 import { USDC, TOKEN, ranges, readError } from "../docs/js/codec.js";
 
@@ -278,6 +279,34 @@ test("D-4 refuses to tie when the indexer never listed the blocks after the base
   assert.notEqual(d4.mark, "—", "never 'nothing to tie' when the listing step did not happen");
   assert.match(d4.why, /the indexer's list did not cover the 218,764 blocks after the baseline/);
   assert.match(d4.sentence.join(""), /This is not the whole list/);
+});
+
+test("the observer diagnosis survives a reader who was throttled instead of capped", () => {
+  // The whole argument used to hang on mainnet.base.org naming its cap in words. A datacenter, or anyone
+  // behind a throttle, gets HTTP 429 first — the very limit this diagnosis is about — and the source citation
+  // used to vanish with it. It must now hold whatever the reader was told.
+  const capped = observerWhy("HTTP 413, error -32614: eth_getLogs is limited to a 2,000 range").join(" ");
+  const throttled = observerWhy("HTTP 429 without CORS headers").join(" ");
+  const unreached = observerWhy(null).join(" ");
+  for (const [name, text] of [["capped", capped], ["throttled", throttled], ["unreached", unreached]]) {
+    assert.match(text, /OBSERVER_BLOCKS_PER_CYCLE_KEYED/, `${name}: the source is cited`);
+    assert.match(text, /src\/observer\.ts/, `${name}: the file is named`);
+    assert.match(text, /#4689/, `${name}: uriel keeps the credit`);
+    assert.match(text, /no two providers agreed/, `${name}: the mark's own words are explained`);
+    assert.match(text, /pages of 1,000/, `${name}: the way out is stated`);
+    assert.match(text, /not read/, `${name}: what is still unread is named`);
+  }
+  // A recording is offered only when the reader did not get the cap, and is always labelled as a record.
+  assert.doesNotMatch(capped, /recorded from an ordinary host/, "no fallback when the live answer already says it");
+  for (const text of [throttled, unreached]) {
+    assert.match(text, /recorded from an ordinary host on 2026-09-12T15:00Z, which is a record and not your reading/);
+    assert.match(text, /ranges over 10000 blocks are not supported on free plan/, "the recorded answers are verbatim");
+  }
+  assert.match(throttled, /told this browser .HTTP 429 without CORS headers./, "the reader's own answer is quoted back");
+  assert.match(unreached, /was not reached from this browser/);
+  // The drpc correction: its refusal is not evidence about this width, and the page must not imply it is.
+  assert.match(capped, /refuses 500, 1,000, 2,000, 5,000 and 10,000 with that same sentence/);
+  assert.equal(Object.isFrozen(RECORDED), true, "a record the page cannot edit at runtime");
 });
 
 test("F's bar counts clocks and not-read lines apart, in one place for page and terminal", () => {
