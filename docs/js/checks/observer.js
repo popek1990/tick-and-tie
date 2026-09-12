@@ -24,7 +24,7 @@ const OBSERVED_TOKENS = [USDC, TOKEN];
 const KEYED_RANGE = 10_000; // src/observer.ts OBSERVER_BLOCKS_PER_CYCLE_KEYED; the live marks span exactly this
 const CAPPED_RANGE = 2_000; // what mainnet.base.org accepts today (-32614 "limited to a 2,000 range")
 const START_MARGIN = 20_000; // src/observer.ts OBSERVER_START_MARGIN_BLOCKS
-const BLOCK_SECONDS = 2;
+export const BLOCK_SECONDS = 2; // Base targets 2 s a block; every blocks→time figure on the page is an estimate from it
 const DAY_BLOCKS = 43_200;
 const HANDLE = /^[A-Za-z0-9_.-]{1,64}$/;
 const plainHandle = (h) => (HANDLE.test(String(h)) ? String(h) : "(a handle with unusual characters)");

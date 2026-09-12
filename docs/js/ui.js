@@ -5,7 +5,7 @@
 // Links are built only by safeLink() from validated parts.
 
 import { reveal, isAddress, lc, short, overlap, isTxHash } from "./codec.js";
-import { LABEL, SHORT, STATE, footing } from "./lines.js";
+import { LABEL, SHORT, STATE, footing, footingF } from "./lines.js";
 import { NODES, LINK_ORIGINS } from "./net.js";
 
 const SVGNS = "http://www.w3.org/2000/svg";
@@ -19,6 +19,9 @@ export function el(tag, props, ...kids) {
       if (k === "class") n.className = v;
       else if (k === "text") n.textContent = v;
       else if (k === "href") throw new Error("links go through safeLink()");
+      // Anything that can fetch or style from a value must not be settable here either: only img-src 'self' would
+      // stand between el("img", {src: <something from the network>}) and a request the page never meant to make.
+      else if (k === "src" || k === "srcset" || k === "style" || k === "formaction" || k === "action" || k === "poster" || k === "background") throw new Error(`${k} is not settable: this page loads no resource from a value`);
       else if (k.startsWith("on")) throw new Error("no inline handlers");
       else n.setAttribute(k, v === true ? "" : String(v));
     }
@@ -148,7 +151,14 @@ export function sentenceEl(parts) {
 export function footingEl(lines, label = "footing", code = "") {
   const bar = el("p", { class: "footing", "aria-label": label });
   // Clocks (F) and forgery exhibits (G) are not money claims, so they are counted, never marked tied or broken.
-  if (code === "F") return bar.append(el("span", { class: "ft" }, glyph("clock"), ` ${lines.length} clock${lines.length === 1 ? "" : "s"}: dates the registry keeps, not money claims`)), bar;
+  // F's lines are clocks, except the ones that are there because a listing's record did not answer: counting those
+  // as clocks would relabel a failed read as a fact the registry keeps.
+  if (code === "F") {
+    const { clocks, unread } = footingF(lines);
+    bar.append(el("span", { class: "ft" }, glyph("clock"), ` ${clocks} clock${clocks === 1 ? "" : "s"}: dates the registry keeps, not money claims`));
+    if (unread) bar.append(el("span", { class: `ft m-${STATE.UNREAD}` }, glyph(STATE.UNREAD), ` ${unread} ${SHORT[STATE.UNREAD]}`));
+    return bar;
+  }
   if (code === "G") return bar.append(el("span", { class: "ft m-broken" }, glyph("forgery"), ` ${lines.length} exhibit${lines.length === 1 ? "" : "s"}: do not pay any address in them`)), bar;
   const f = footing(lines);
   for (const s of [STATE.TIED, STATE.BROKEN, STATE.BLIND, STATE.UNREAD, STATE.PENDING, STATE.NIL]) {
@@ -174,7 +184,7 @@ export function renderLine(line, { onOpen } = {}) {
       { class: "body" },
       el("h3", { class: "ltitle" }, ref, " · ", bdi(line.title, 160, "title")),
       sentenceEl(line.sentence),
-      line.why ? el("p", { class: "why", text: line.why }) : null
+      line.why ? el("p", { class: "why" }, bdi(line.why, 600)) : null
     )
   );
   art.append(el("div", { class: "act" }, openBtn));
@@ -246,11 +256,13 @@ export function openDrawer(line, all = drawerLines) {
   const shows = el("section", { class: "d-shows" }, el("h4", { text: "THE CHAIN SHOWS" }));
   if (!line.shows.length) shows.append(el("p", { class: "muted", text: "nothing read on Base for this line" }));
   const nodeName = (id) => (NODES[id] ? `${new URL(NODES[id].url).host} (${NODES[id].operator})` : id);
-  for (const s of line.shows) shows.append(s.group ? el("h5", { class: "grp", text: s.group }) : el("div", { class: "row" }, el("span", { class: "k", text: nodeName(s.node) }), el("span", { class: "v mono", text: s.text })));
+  // A node's or the registry's own words go through reveal() like every other quoted string: a control character or
+  // an RTL override in an error message would otherwise reorder the sentence a reader is using to check us.
+  for (const s of line.shows) shows.append(s.group ? el("h5", { class: "grp" }, bdi(s.group, 200)) : el("div", { class: "row" }, el("span", { class: "k", text: nodeName(s.node) }), el("span", { class: "v mono" }, bdi(s.text, 600))));
   const log = el("section", { class: "d-log" }, el("h4", { text: "THE SOCIETY'S LOG" }));
   if (!line.log.length) log.append(el("p", { class: "muted", text: "no log check on this line" }));
-  for (const s of line.log) log.append(el("div", { class: `row ${s.ok === true ? "ok" : s.ok === false ? "bad" : "unk"}` }, el("span", { class: "k" }, glyph(s.ok === true ? STATE.TIED : s.ok === false ? STATE.BROKEN : STATE.UNREAD)), el("span", { class: "v", text: s.label })));
-  const nv = el("section", { class: "d-nv" }, el("h4", { text: "NOT VERIFIED" }), el("ul", null, line.notVerified.map((t) => el("li", { text: t }))));
+  for (const s of line.log) log.append(el("div", { class: `row ${s.ok === true ? "ok" : s.ok === false ? "bad" : "unk"}` }, el("span", { class: "k" }, glyph(s.ok === true ? STATE.TIED : s.ok === false ? STATE.BROKEN : STATE.UNREAD)), el("span", { class: "v" }, bdi(s.label, 400))));
+  const nv = el("section", { class: "d-nv" }, el("h4", { text: "NOT VERIFIED" }), el("ul", null, line.notVerified.map((t) => el("li", null, bdi(t, 600)))));
   const extra = line.extra?.exhibit ? exhibitEl(line.extra) : null;
   const cite = line.cite ? el("section", { class: "d-cite" }, el("h4", { text: "CITE" }), el("pre", { text: `${line.cite}\n${location.origin}${location.pathname}${line.route}` })) : null;
 

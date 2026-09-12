@@ -10,12 +10,16 @@ import { fromMs, isoMin, span, formatAsset, parseAtomic, lc, short, isAddress, r
 import { line, STATE } from "../lines.js";
 
 // Everything still owed: outstanding_awarded splits into currently_due and overdue_unpaid (the rail's own note).
-const owed = (l) => ["outstanding_awarded_atomic", "currently_due_atomic", "overdue_unpaid_atomic"].some((k) => (parseAtomic(l.economics?.[k]) ?? 0n) > 0n);
+const OWED_KEYS = ["outstanding_awarded_atomic", "currently_due_atomic", "overdue_unpaid_atomic"];
+const owed = (l) => OWED_KEYS.some((k) => (parseAtomic(l.economics?.[k]) ?? 0n) > 0n);
+// A figure the page cannot parse is not a zero. A listing whose own amounts do not read has to stay visible, or a
+// malformed field would quietly remove money that is owed from this schedule.
+const unreadable = (l) => OWED_KEYS.some((k) => l.economics?.[k] != null && parseAtomic(l.economics[k]) === null);
 
 export async function scheduleF(ctx) {
   const rail = ctx.docs.rail;
   const lines = [];
-  const due = (rail?.listings ?? []).filter(owed);
+  const due = (rail?.listings ?? []).filter((l) => owed(l) || unreadable(l));
   const details = [];
   const missed = [];
   for (const l of due) {
@@ -64,7 +68,9 @@ export async function scheduleF(ctx) {
   for (const { l, error } of missed) {
     const e = l.economics ?? {};
     const token = l.asset?.token;
-    const owedNow = formatAsset(parseAtomic(e.outstanding_awarded_atomic ?? e.currently_due_atomic) ?? 0n, token);
+    // A figure that does not parse is printed as unread, never rounded down to nothing.
+    const owedAtomic = parseAtomic(e.outstanding_awarded_atomic ?? e.currently_due_atomic);
+    const owedNow = owedAtomic === null ? "an amount this page could not read" : formatAsset(owedAtomic, token);
     const states = Object.entries(l.award_states ?? {}).filter(([s, n]) => n > 0 && ["payable", "overdue_unpaid", "awarded"].includes(s)).map(([s, n]) => `${n} ${s}`).join(", ");
     const why = readError(error);
     lines.push(

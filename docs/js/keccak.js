@@ -8,7 +8,8 @@
 //
 // BigInt lanes: slow next to a 32-bit implementation and irrelevant here, because the page hashes a few
 // hundred short strings per load, not megabytes. Clarity wins over speed in code a judge is meant to read.
-// Test vectors: test/keccak.test.mjs (empty string, "abc", the 135/136/137-byte rate boundary).
+// Test vectors: test/crypto.test.mjs (empty string, "abc", the 135/136/137-byte rate boundary), and abi.js
+// re-derives every selector this page sends from its signature, so a wrong keccak disables those calls.
 
 const M = (1n << 64n) - 1n;
 

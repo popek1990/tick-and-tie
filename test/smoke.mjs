@@ -1,18 +1,31 @@
 #!/usr/bin/env node
-// test/smoke.mjs · TICK & TIE · a headless Chromium smoke test over the DevTools protocol (T5 of check-readonly).
+// test/smoke.mjs · TICK & TIE · a headless Chromium smoke test over the DevTools protocol. It is the run-time half of
+// scripts/check-readonly.mjs: what a file cannot show (a name assembled at run time, a listener that really exists, a
+// request that is really made, what is left in storage afterwards) is what this watches.
 // Node >= 22 standard library only: node:http serves docs/, the global WebSocket speaks CDP.
 //
-// What it proves in a real browser, from the live DOM and the network log (not from the source):
-//   - nowhere to type: after every route (with every <details> opened) there are 0 input/textarea/select/form/
-//     option/datalist/output/label/fieldset/legend/iframe/object/embed/foreignObject/[contenteditable]/textbox roles,
-//     every <button> is type="button", and document.designMode is "off";
+// What it proves in a real browser, from the live DOM, the listener tape and the network log (not from the source):
+//   - nowhere to type: after every route of the router — the ten named views plus one #/p/<handle> trail and one
+//     #/<k>/<sub> drawer — with every <details> opened, there are 0 input/textarea/select/form/option/datalist/output/
+//     label/fieldset/legend/iframe/object/embed/foreignObject/[contenteditable]/textbox roles, every <button> is
+//     type="button", and document.designMode is "off";
+//   - nothing listens for typing: addEventListener is replaced before the page loads with a recorder that cannot be
+//     put back, so every listener registered anywhere (document, window, any element) is named whatever its event name
+//     was built from — and only "click" and "hashchange" are allowed. DOMDebugger.getEventListeners asks the browser
+//     the same question about window, document and <body>. This is the answer to names a static scan cannot read;
 //   - the CSP holds: 0 securitypolicyviolation events, and assigning innerHTML throws (Trusted Types);
 //   - reads only: every request to 1f916.ai, base.blockscout.com and raw.githubusercontent.com is GET; every POST goes
 //     to a node in net.js NODES and its JSON body uses only net.js RPC_METHODS; nothing leaves the CSP's connect-src
-//     (plus 'self'); no worker or frame is created;
+//     (plus 'self'); no worker or frame is created; no request carries a cookie or authorization header;
+//   - nothing is stored: after the run localStorage and sessionStorage are empty, indexedDB.databases() is empty, and
+//     document.cookie is empty;
 //   - no polling: once the page has settled, --idle seconds pass with zero new requests.
-// It prints a method × origin table, saves screenshots at 1280×900 and 400×860 in test/screenshots/ (git-ignored),
-// and exits 0 on PASS, 1 on FAIL (including "docs/index.html does not exist yet"), 2 if it cannot run (no Chromium).
+// What it does not prove: that the page is honest about Base (that is the two-node rule), that the registry serves
+// every reader the same documents, or anything about a route or a listener that no run here reached. It exercises one
+// browser, one viewport pair, and whatever the fixtures (or the live registry) answered on the day.
+// It prints a method × origin table and the listener tape, saves screenshots at 1280×900 and 400×860 in
+// test/screenshots/ (git-ignored), and exits 0 on PASS, 1 on FAIL (including "docs/index.html does not exist yet"),
+// 2 if it cannot run (no Chromium).
 //
 // Usage:  node test/smoke.mjs [--fixtures | --live] [--idle <s>] [--docs <dir>] [--chrome <path>] [--no-shots]
 //   --fixtures (default)  nothing leaves this machine: the Fetch domain answers every non-local request from
@@ -49,8 +62,16 @@ const DOCS = resolve(opt("--docs", join(ROOT, "docs")));
 const IDLE_S = Number(opt("--idle", LIVE ? 60 : 5));
 const FIX = join(ROOT, "test/fixtures");
 const SHOTS = join(ROOT, "test/screenshots");
+// Every route the page has: the ten named views, plus the two the router builds from a value — #/p/<handle> (a
+// citizen's trail) and #/<k>/<sub> (a line's drawer). The last two are taken from the page's own links when it offers
+// them, so the handle and the line ref are real ones, and fall back to a literal route when a fixture run has neither.
 const ROUTES = ["#/", "#/a", "#/c", "#/l", "#/f", "#/g", "#/d", "#/people", "#/tape", "#/legend"];
+const ROUTE_FALLBACK = { trail: "#/p/popek1990", drawer: "#/a/A-1" };
 const FIELDS = "input,textarea,select,form,option,optgroup,datalist,output,label,fieldset,legend,iframe,frame,object,embed,portal,foreignObject,[contenteditable],[role~=textbox],[role~=searchbox],[role~=combobox],[role~=spinbutton]";
+// Listeners the page is allowed to register, and the kinds that would mean it takes typing, a paste or a message.
+const LISTENER_OK = new Set(["click", "hashchange"]);
+const LISTENER_OURS = new Set(["securitypolicyviolation"]); // this file's own probe, added before the recorder
+const TYPING_LISTENER = /^(key(down|up|press)|beforeinput|input|change|paste|cut|copy|composition(start|update|end)|message|messageerror)$/;
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const failures = new Map(); // message → times seen
 const fail = (msg) => failures.set(msg, (failures.get(msg) ?? 0) + 1);
@@ -123,8 +144,14 @@ const cleanup = () => {
   try {
     proc.kill("SIGKILL");
   } catch {}
-  server.close();
-  rmSync(profile, { recursive: true, force: true });
+  try {
+    server.close();
+  } catch {}
+  // The browser may still be writing its profile as it dies; a temporary directory that outlives this run is not a
+  // finding about the page, so it never decides the exit code.
+  try {
+    rmSync(profile, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
+  } catch {}
 };
 process.on("exit", cleanup); // any exit, including an unexpected CDP error, leaves no browser and no profile behind
 const giveUp = (why) => {
@@ -264,7 +291,34 @@ async function answer(p) {
 }
 
 // ---- drive the page -------------------------------------------------------------------------------------------------------
-const PROBE = 'Object.defineProperty(window, "__smokeCsp", { value: [] }); document.addEventListener("securitypolicyviolation", (e) => window.__smokeCsp.push(`${e.violatedDirective} ${e.blockedURI} ${e.sourceFile || ""}:${e.lineNumber || ""}`), true);';
+// Runs before any page script, in every document. It records CSP violations, then replaces
+// EventTarget.prototype.addEventListener with a recorder, so that every listener the page registers — on document, on
+// window, on any element — is named and counted. The replacement is not writable and not configurable: page code
+// cannot put the original back. Its own securitypolicyviolation listener is added first, so it is not in the tape.
+const PROBE = [
+  'Object.defineProperty(window, "__smokeCsp", { value: [] });',
+  'document.addEventListener("securitypolicyviolation", (e) => window.__smokeCsp.push(`${e.violatedDirective} ${e.blockedURI} ${e.sourceFile || ""}:${e.lineNumber || ""}`), true);',
+  'Object.defineProperty(window, "__smokeListeners", { value: [] });',
+  "(() => {",
+  "  const add = EventTarget.prototype.addEventListener;",
+  "  const where = (t) => {",
+  "    try {",
+  '      if (t === window) return "window";',
+  '      if (t === document) return "document";',
+  '      if (t && t.nodeType === 9) return "a document";',
+  '      if (t && t.nodeType === 1) return t.tagName.toLowerCase() + (t.id ? "#" + t.id : "") + (typeof t.className === "string" && t.className ? "." + t.className.trim().split(/\\s+/)[0] : "");',
+  "      return Object.prototype.toString.call(t);",
+  '    } catch (e) { return "?"; }',
+  "  };",
+  '  Object.defineProperty(EventTarget.prototype, "addEventListener", {',
+  "    value: function (type, fn, opts) {",
+  '      try { window.__smokeListeners.push(String(type) + " on " + where(this)); } catch (e) {}',
+  "      return add.apply(this, arguments);",
+  "    },",
+  "    writable: false, configurable: false, enumerable: false,",
+  "  });",
+  "})();",
+].join("\n");
 const DOM = `(() => {
   const found = [], roots = [document];
   while (roots.length) { const r = roots.pop(); for (const e of r.querySelectorAll("*")) if (e.shadowRoot) roots.push(e.shadowRoot); for (const e of r.querySelectorAll(${JSON.stringify(FIELDS)})) found.push(e.outerHTML.slice(0, 100)); }
@@ -303,7 +357,9 @@ if (nav.errorText) fail(`navigation failed: ${nav.errorText}`);
 if (!(await settle(5000, 90_000))) fail("the first load did not settle (5 s without a request) within 90 s");
 if (!args.includes("--no-shots")) mkdirSync(SHOTS, { recursive: true });
 const perRoute = [];
-for (const route of ROUTES) {
+const linked = { trail: null, drawer: null };
+const firstHref = (re) => `(() => { for (const a of document.querySelectorAll("a[href]")) { const h = a.getAttribute("href"); if (${re}.test(h)) return h; } return null; })()`;
+async function visit(route) {
   phase = route;
   await evaluate(`location.hash = ${JSON.stringify(route)}`);
   if (!(await settle(2000, 45_000))) fail(`${route}: the network never went quiet for 2 s`);
@@ -314,8 +370,10 @@ for (const route of ROUTES) {
   if (d.found.length) fail(`${route}: ${d.found.length} field-like element(s): ${d.found.slice(0, 2).join(" | ")}`);
   if (d.untyped.length) fail(`${route}: <button> without type="button": ${d.untyped[0]}`);
   if (d.designMode !== "off") fail(`${route}: document.designMode is ${d.designMode}`);
+  linked.trail ??= await evaluate(firstHref("/^#\\/p\\/[^/]+$/"));
+  linked.drawer ??= await evaluate(firstHref("/^#\\/[acdfgl]\\/.+$/"));
   if (!args.includes("--no-shots")) {
-    const name = route.slice(2) || "today";
+    const name = (route.slice(2) || "today").replace(/[^\w.-]+/g, "-");
     for (const [w, h, mobile] of [[1280, 900, false], [400, 860, true]]) {
       await metrics(w, h, mobile);
       await sleep(300);
@@ -325,6 +383,10 @@ for (const route of ROUTES) {
     await metrics(1280, 900, false);
   }
 }
+for (const route of ROUTES) await visit(route);
+// The two routes built from a value. A drawer route also opens the <dialog>, so the fields count covers what it builds.
+await visit(linked.trail ?? ROUTE_FALLBACK.trail);
+await visit(linked.drawer ?? ROUTE_FALLBACK.drawer);
 phase = "settle";
 await settle(5000, 60_000);
 phase = "idle";
@@ -337,6 +399,56 @@ if (csp.length || cspLog.length) fail(`${csp.length} securitypolicyviolation eve
 const tt = await evaluate('(() => { try { document.createElement("div").innerHTML = "x"; return "assigned"; } catch (e) { return e.name; } })()');
 if (tt !== "TypeError") fail(`Trusted Types: assigning innerHTML ${tt === "assigned" ? "was allowed" : `gave ${tt}`}`);
 if (children.length) fail(`child targets created (worker-src/frame-src are 'none'): ${children.join(", ")}`);
+
+// ---- which listeners exist, from the run itself ---------------------------------------------------------------------
+// The static scan cannot read an event name assembled at run time (["key","down"].join("")); this can. Every
+// addEventListener call the page made is in the tape, whatever the name was built from, and the kinds are the whole
+// claim: clicks and hashchange, nothing that takes typing, a paste or a message.
+const tape = new Map();
+for (const entry of (await evaluate("window.__smokeListeners.slice()")) ?? []) tape.set(entry, (tape.get(entry) ?? 0) + 1);
+for (const [entry, n] of tape) {
+  const type = entry.split(" on ")[0];
+  if (TYPING_LISTENER.test(type)) fail(`a "${type}" listener was registered at run time (${entry}${n > 1 ? ` ×${n}` : ""}): this page takes no typing, paste or message input`);
+  else if (!LISTENER_OK.has(type)) fail(`an unexpected listener kind registered at run time: "${entry}" (this page needs only ${[...LISTENER_OK].join(" and ")})`);
+}
+// The same question asked of the browser instead of the page, in case something reached addEventListener another way.
+const cdpListeners = async (expression) => {
+  const r = await send("Runtime.evaluate", { expression }).catch(() => null);
+  const objectId = r?.result?.objectId;
+  if (!objectId) return null;
+  const got = await send("DOMDebugger.getEventListeners", { objectId, depth: -1, pierce: true }).catch(() => null);
+  await send("Runtime.releaseObject", { objectId }).catch(() => {});
+  return got ? (got.listeners ?? []).map((l) => l.type) : null;
+};
+const cdpSeen = [];
+for (const [what, expression] of [["window", "window"], ["document and its subtree", "document"], ["<body> and its subtree", "document.body"]]) {
+  const types = await cdpListeners(expression);
+  if (types === null) {
+    cdpSeen.push(`${what}: not read`);
+    continue;
+  }
+  const counted = new Map();
+  for (const t of types) if (!LISTENER_OURS.has(t)) counted.set(t, (counted.get(t) ?? 0) + 1);
+  cdpSeen.push(`${what}: ${[...counted].map(([t, n]) => `${t} ×${n}`).join(", ") || "none"}`);
+  for (const t of types) {
+    if (LISTENER_OURS.has(t)) continue;
+    if (TYPING_LISTENER.test(t)) fail(`DOMDebugger: a "${t}" listener is attached to ${what}`);
+    else if (!LISTENER_OK.has(t)) fail(`DOMDebugger: an unexpected "${t}" listener is attached to ${what}`);
+  }
+}
+
+// ---- nothing was stored ---------------------------------------------------------------------------------------------
+const storage = (await evaluate(`(async () => {
+  const out = { local: null, session: null, cookie: document.cookie, dbs: null, notes: [] };
+  try { out.local = localStorage.length; } catch (e) { out.notes.push("localStorage " + e.name); }
+  try { out.session = sessionStorage.length; } catch (e) { out.notes.push("sessionStorage " + e.name); }
+  try { out.dbs = (await indexedDB.databases()).map((d) => d.name); } catch (e) { out.notes.push("indexedDB.databases() " + e.name); }
+  return out;
+})()`)) ?? {};
+if (storage.local) fail(`localStorage holds ${storage.local} key(s) after the run`);
+if (storage.session) fail(`sessionStorage holds ${storage.session} key(s) after the run`);
+if (Array.isArray(storage.dbs) && storage.dbs.length) fail(`${storage.dbs.length} IndexedDB database(s) after the run: ${storage.dbs.join(", ")}`);
+if (storage.cookie) fail(`document.cookie is not empty after the run: ${String(storage.cookie).slice(0, 80)}`);
 
 // ---- the network log -------------------------------------------------------------------------------------------------------
 const inCsp = (url) => {
@@ -384,10 +496,14 @@ for (const r of requests) {
 // ---- report ---------------------------------------------------------------------------------------------------------------------
 const out = [`smoke · TICK & TIE · ${LIVE ? "live" : "fixtures (nothing left this machine)"} · ${CHROME.split("/").slice(-1)[0]} · ${SELF}`];
 out.push("routes (fields · untyped buttons · designMode · buttons/details/dialogs):");
-for (const r of perRoute) out.push(`  ${r.route.padEnd(9)} ${r.found.length} · ${r.untyped.length} · ${r.designMode} · ${r.buttons}/${r.details}/${r.dialogs}`);
+for (const r of perRoute) out.push(`  ${r.route.padEnd(14)} ${r.found.length} · ${r.untyped.length} · ${r.designMode} · ${r.buttons}/${r.details}/${r.dialogs}`);
 out.push(`requests: ${requests.length} (method × origin)`);
 for (const [k, n] of [...table].sort()) out.push(`  ${String(n).padStart(4)}  ${k}`);
 out.push(`idle ${IDLE_S} s after settling: ${idle.length} new requests · securitypolicyviolation events: ${csp.length} (CSP console messages: ${cspLog.length}) · Trusted Types: innerHTML ${tt === "TypeError" ? "throws" : tt}`);
+out.push(`listeners registered during the run: ${[...tape.values()].reduce((a, b) => a + b, 0)} (every addEventListener call, whatever built its name)`);
+for (const [entry, n] of [...tape].sort()) out.push(`  ${String(n).padStart(4)}  ${entry}`);
+out.push(`  DOMDebugger, asked of the browser: ${cdpSeen.join(" · ")}`);
+out.push(`storage after the run: localStorage ${storage.local ?? "?"} keys · sessionStorage ${storage.session ?? "?"} keys · indexedDB ${Array.isArray(storage.dbs) ? `${storage.dbs.length} databases` : storage.dbs ?? "?"} · document.cookie ${storage.cookie ? storage.cookie.length + " bytes" : "empty"}${storage.notes?.length ? ` · ${storage.notes.join("; ")}` : ""}`);
 if (exceptions.length) out.push(`page exceptions (not a failure by themselves): ${exceptions.length}: ${[...new Set(exceptions)].slice(0, 3).join(" | ")}`);
 if (!args.includes("--no-shots")) out.push(`screenshots: ${perRoute.length * 2} in test/screenshots/ (1280×900 and 400×860)`);
 for (const [f, n] of failures) out.push(`FAIL  ${n > 1 ? `(×${n}) ` : ""}${f}`);

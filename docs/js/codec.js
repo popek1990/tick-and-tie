@@ -39,7 +39,8 @@ export function parseQuantity(v) {
 
 /**
  * A 32-byte eth_call result → BigInt, or null. "0x" is what a throttled node or a call to a non-contract returns:
- * it is "not read", never zero (mainnet.base.org's throttle can look exactly like a revert, per CLAUDE.md).
+ * it is "not read", never zero: a throttled node answers "0x" exactly as a call to a non-contract does, so a zero
+ * here would invent a balance nobody read.
  */
 export function parseWord(v) {
   if (typeof v !== "string" || !/^0x[0-9a-fA-F]{64}$/.test(v)) return null;

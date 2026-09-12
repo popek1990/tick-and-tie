@@ -25,7 +25,7 @@ export function newRun() {
     if (!detailCache.has(id)) detailCache.set(id, net.registry(`/api/listings/${id}`));
     return detailCache.get(id);
   };
-  return { ctx, results: { A: null, C: null, L: null, F: null, G: null, D: null, census: null, today: null, todayPending: true, controls: null, Gnotes: [] }, problems: [] };
+  return { ctx, results: { A: null, C: null, L: null, F: null, G: null, D: null, census: null, today: null, todayPending: true, controls: null, controlsSkipped: [], Gnotes: [] }, problems: [] };
 }
 
 /**
@@ -156,7 +156,12 @@ export function summary(run) {
   const spent = net.spent();
   const c = results.controls ?? [];
   const failed = c.filter((x) => !x.pass).length;
-  return `Read at ${ctx.readAt} · ${spent.registry} registry GETs · ${spent.rpc} Base reads · ${spent.indexer} indexer GETs · controls: ${c.length - failed}/${c.length} as they must${failed ? `, ${failed} not (see Legend)` : " (every corrupted copy failed, every copy as served passed)"}${problems.length ? ` · ${problems.length} problem${problems.length === 1 ? "" : "s"} (see Legend)` : ""}.`;
+  // Controls that never ran prove nothing: 0 of 0 is a skipped self-test, and must never read as a passed one.
+  const missed = results.controlsSkipped ?? [];
+  const controls = !c.length
+    ? "controls: none ran on this read (their inputs were not read), so nothing here was proved by a corrupted copy"
+    : `controls: ${c.length - failed}/${c.length} as they must${failed ? `, ${failed} not (see Legend)` : " (every corrupted copy failed, every copy as served passed)"}${missed.length ? `, and ${missed.length} group${missed.length === 1 ? "" : "s"} did not run (see Legend)` : ""}`;
+  return `Read at ${ctx.readAt} · ${spent.registry} registry GETs · ${spent.rpc} Base reads · ${spent.indexer} indexer GETs · ${controls}${problems.length ? ` · ${problems.length} problem${problems.length === 1 ? "" : "s"} (see Legend)` : ""}.`;
 }
 
 // ---- negative controls: every green here must be able to go red ------------------------------------------
@@ -170,6 +175,9 @@ export function flipHex(s, i = 5) {
 export async function controls(run) {
   const { ctx, results } = run;
   const out = [];
+  // A control group whose inputs were not read did not run. It is neither a pass nor a failure, and the status line
+  // has to say it is missing: "11/11 as they must" over a set that quietly lost three proves less than it looks.
+  const skipped = [];
   const add = (name, expected, got) => out.push({ name, expected, got: String(got), pass: String(got) === String(expected) });
   const cps = ctx.docs.checkpoint?.checkpoints ?? [];
   const idCp = cps.find((c) => c.log === "identity_events");
@@ -179,7 +187,7 @@ export async function controls(run) {
       add("identity checkpoint, as served", true, await verifyCheckpoint(ctx.registryKey, "identity_events", idCp));
       add("identity checkpoint, one signature character changed", false, await verifyCheckpoint(ctx.registryKey, "identity_events", { ...idCp, sig: flipHex(idCp.sig) }));
       add("identity checkpoint, tree size + 1", false, await verifyCheckpoint(ctx.registryKey, "identity_events", { ...idCp, tree_size: idCp.tree_size + 1 }));
-    }
+    } else skipped.push("the identity checkpoint (3): GET /api/checkpoint or the registry key was not read");
     if (ledgerCp && ctx.docs.treasury) {
       const rows = ctx.docs.treasury.entries ?? [];
       const sealed = rows.filter((r) => r.hash);
@@ -187,7 +195,7 @@ export async function controls(run) {
       const tampered = rows.map((r) => (r === target ? { ...r, amount_cents: r.amount_cents + 1 } : r));
       add("books fold, as served", true, (await verifyLedgerRoot(ctx.registryKey, rows, ledgerCp)).ok);
       add(`books fold, row ${target?.id} amount + 1 cent`, false, (await verifyLedgerRoot(ctx.registryKey, tampered, ledgerCp)).ok);
-    }
+    } else skipped.push("the books' fold (2): the ledger checkpoint or GET /treasury was not read");
     const a = (results.A ?? []).find((l) => l.state === STATE.TIED && l.extra?.claim);
     if (a && ctx.samples?.receipts) {
       const claim = a.extra.claim;
@@ -195,18 +203,19 @@ export async function controls(run) {
       add(`${a.ref} tie, amount + 1 atomic unit`, STATE.BROKEN, tieTransfer({ ...claim, value: claim.value + 1n }, ctx.samples.receipts, ctx.minFinal).state);
       add(`${a.ref} tie, wrong token`, STATE.BROKEN, tieTransfer({ ...claim, token: TOKEN }, ctx.samples.receipts, ctx.minFinal).state);
       add(`${a.ref} tie, log index + 1`, STATE.BROKEN, tieTransfer({ ...claim, logIndex: claim.logIndex + 1 }, ctx.samples.receipts, ctx.minFinal).state);
-    }
+    } else skipped.push("a receipt tie (4): no receipt tied at two nodes on this read, so there was nothing to corrupt");
     const cs = ctx.samples?.consistency;
     if (cs && cs.proof.length) {
       add(`witness consistency ${cs.first} → ${cs.second}, as served`, true, await verifyConsistency(cs.first, cs.second, cs.firstRoot, cs.secondRoot, cs.proof));
       add("witness consistency, one proof hash changed", false, await verifyConsistency(cs.first, cs.second, cs.firstRoot, cs.secondRoot, [flipHex(cs.proof[0]), ...cs.proof.slice(1)]));
       add("witness consistency, the witnessed root changed", false, await verifyConsistency(cs.first, cs.second, flipHex(cs.firstRoot), cs.secondRoot, cs.proof));
-    }
+    } else skipped.push("the witness consistency proof (3): the witness day file or GET /api/checkpoint/consistency was not read");
     add("lookalike: a real poisoning pair", true, isLookalike("0x4B010DeaCd6aA30D6674b0624ad5aAD935B44D28", "0x4b086F5Df2a15394a3b2FD83Db90764F25134d28"));
     add("lookalike: an address against itself", false, isLookalike("0x4B010DeaCd6aA30D6674b0624ad5aAD935B44D28", "0x4b010deacd6aa30d6674b0624ad5aad935b44d28"));
   } catch (e) {
     if (e instanceof NotSupported) add("Ed25519 in this browser", "available", "not available: signature lines read as not read");
     else add("controls", "ran", `stopped: ${e?.message ?? e}`);
   }
+  results.controlsSkipped = skipped;
   return out;
 }

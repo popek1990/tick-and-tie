@@ -8,7 +8,7 @@
 import { readFileSync } from "node:fs";
 import { newRun, runAll, summary, LOCAL } from "../docs/js/run.js";
 import { reveal } from "../docs/js/codec.js";
-import { LABEL, SHORT, footing } from "../docs/js/lines.js";
+import { LABEL, SHORT, footing, footingF } from "../docs/js/lines.js";
 import { censusHeadline } from "../docs/js/checks/census.js";
 
 const json = process.argv.includes("--json");
@@ -74,13 +74,15 @@ if (json) {
     const lines = results[k] ?? [];
     const f = footing(lines);
     w();
-    const count = k === "F" ? `${lines.length} clock${lines.length === 1 ? "" : "s"}, not in the footing` : k === "G" ? `${lines.length} exhibit${lines.length === 1 ? "" : "s"}, not in the footing` : Object.entries(f).filter(([, n]) => n).map(([s, n]) => `${n} ${SHORT[s]}`).join(" · ") || "no lines";
+    const fF = footingF(lines);
+    const count = k === "F" ? `${fF.clocks} clock${fF.clocks === 1 ? "" : "s"}, not in the footing${fF.unread ? ` · ${fF.unread} not read` : ""}` : k === "G" ? `${lines.length} exhibit${lines.length === 1 ? "" : "s"}, not in the footing` : Object.entries(f).filter(([, n]) => n).map(([s, n]) => `${n} ${SHORT[s]}`).join(" · ") || "no lines";
     w(`${k} · ${title.toUpperCase()} · ${count}`);
     for (const l of all ? lines : lines.slice(0, k === "D" ? 6 : 5)) w(`  ${l.mark} ${l.ref}  ${sentence(l.sentence)}${l.why ? `  [${l.why}]` : ""}`);
     if (!all && lines.length > (k === "D" ? 6 : 5)) w(`  … ${lines.length - (k === "D" ? 6 : 5)} more (--all)`);
   }
   w();
   w(`CONTROLS: ${(results.controls ?? []).map((c) => `${c.pass ? "✓" : "✗"} ${c.name}`).join("; ")}`);
+  if (results.controlsSkipped?.length) w(`  did not run on this read: ${results.controlsSkipped.join("; ")}`);
   if (problems.length) {
     w();
     w("PROBLEMS ON THIS READ");

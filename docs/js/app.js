@@ -57,13 +57,32 @@ function periodText() {
   return `${from} to block ${groupInt(ctx.minFinal)} (finalized${t ? ", " + t : ""}); receipts: every one in the log`;
 }
 
+/** The problems this read recorded for one schedule: a schedule that threw produced no lines, and says so. */
+const stoppedIn = (k) => problems.filter((p) => p.startsWith(`schedule ${k} stopped`));
+
+/** An empty schedule means "nothing to report" only when it ran. If it stopped, name the read that did not finish. */
+function emptyScheduleNote(k) {
+  const stopped = stoppedIn(k);
+  return stopped.length ? `Not read: ${stopped.join("; ")}. Nothing in this schedule was checked on this read, so this is not an empty schedule.` : "nothing in this schedule on this read";
+}
+
 function viewToday() {
   const wrap = el("div", { class: "front" });
   const t = el("section", { class: "today", "aria-labelledby": "h-today" }, el("h2", { id: "h-today" }, "Today on the rail"));
   t.append(el("p", { class: "sub", text: "Up to three things picked by rule, not taste: each is something the registry can act on. Nothing about the treasury is picked here." }));
   const items = results.today ?? [];
   if (!items.length && results.todayPending) t.append(el("p", { class: "working", text: "working…" }));
-  else if (!items.length) t.append(el("p", { class: "sub", text: ctx.docs.rail ? "Nothing picked on this read: no observer mark is behind, no award is due without a receipt, and listing 23 was not read." : "Not read: GET /api/rail did not answer, so there is nothing to pick from. The problems are listed in the Legend." }));
+  else if (!items.length) {
+    // Today is picked from the observer item and schedules F and L. If any of them stopped, an empty Today is a
+    // read that did not finish, not a quiet day, and it must not be printed as one.
+    const stopped = problems.filter((p) => p.startsWith("today:") || p.startsWith("schedule F stopped") || p.startsWith("schedule L stopped"));
+    const text = !ctx.docs.rail
+      ? "Not read: GET /api/rail did not answer, so there is nothing to pick from. The problems are listed in the Legend."
+      : stopped.length
+        ? `Nothing could be picked, because part of this read did not finish: ${stopped.join("; ")}. That is not the same as nothing being due. The problems are listed in the Legend.`
+        : "Nothing picked on this read: no observer mark is behind, no award is due without a receipt, and listing 23 was not read.";
+    t.append(el("p", { class: stopped.length ? "nv" : "sub", text }));
+  }
   for (const [i, it] of (results.today ?? []).entries()) {
     const item = el("article", { class: `titem t-${it.key}` });
     item.append(el("span", { class: "tnum", text: String(i + 1) }));
@@ -84,7 +103,7 @@ function viewToday() {
     const sec = ui.scheduleSection(k, TITLES[k][0], TITLES[k][1], lines, { onOpen: openLine, show });
     if (!lines) sec.append(el("p", { class: "working", text: "working…" }));
     else if (lines.length > show) sec.append(el("p", { class: "more" }, safeLink("route", `#/${k.toLowerCase()}`, `all ${lines.length} lines of ${k} ›`)));
-    else if (!lines.length) sec.append(el("p", { class: "sub", text: "nothing in this schedule on this read" }));
+    else if (!lines.length) sec.append(el("p", { class: stoppedIn(k).length ? "nv" : "sub", text: emptyScheduleNote(k) }));
     wrap.append(sec);
   }
   return wrap;
@@ -174,6 +193,7 @@ function viewSchedule(k) {
   const lines = results[k];
   const sec = ui.scheduleSection(k, TITLES[k][0], TITLES[k][1], lines, { onOpen: openLine, intro: k === "L" ? l23Intro() : k === "D" ? booksIntro() : k === "G" ? forgeryIntro() : null });
   if (!lines) sec.append(el("p", { class: "working", text: "working…" }));
+  else if (!lines.length) sec.append(el("p", { class: stoppedIn(k).length ? "nv" : "sub", text: emptyScheduleNote(k) }));
   if (k === "L" && lines) sec.append(l23Table());
   if (k === "D" && lines) sec.append(outflowDetails());
   if (k === "G" && results.Gnotes?.length) sec.append(el("p", { class: "nv", text: `Not read: ${results.Gnotes.join("; ")}` }));
@@ -253,6 +273,7 @@ function viewTape() {
   const spent = net.spent();
   s.append(el("p", { class: "sub", text: `${tape.length} requests · registry ${spent.registry}/${net.BUDGET.registry.max} · Base ${spent.rpc}/${net.BUDGET.rpc.max} · indexer ${spent.indexer}/${net.BUDGET.indexer.max} · witness ${spent.witness}/${net.BUDGET.witness.max}. Your browser's network panel is the independent check; this is the page describing itself.` }));
   s.append(el("p", { class: "sub", text: "What the network panel shows that this list does not: an OPTIONS request before each POST to a Base node (the browser asks the node whether it takes a JSON body; the page sends none of these itself), and the observer replay's refusals as failed or red requests. Those refusals are the finding in Today's first item, not a fault." }));
+  s.append(el("p", { class: "sub", text: "A row with a status of TypeError and 0 bytes is a read the registry refused: its rate limit answers HTTP 429 without CORS headers, so a browser is allowed to tell the page only that the request failed. The console shows those as CORS errors against 1f916.ai. The page asks once more, and the line that needed the answer says it was not read." }));
   const by = new Map();
   for (const t of tape) {
     const k = `${t.method} ${t.origin}`;
@@ -298,6 +319,8 @@ function viewLegend() {
   );
   s.append(el("h3", { text: "Controls: the same checks on copies as served, which must pass, and on corrupted copies, which must fail" }));
   if (results.controls) s.append(table(["control", "expected", "got", ""], results.controls.map((c) => [c.name, String(c.expected), c.got, c.pass ? "✓ as it must" : "✗ CONTROL FAILED"])));
+  // A group whose inputs were not read did not run. Naming it keeps "N/N as they must" from reading as "all of them".
+  if (results.controlsSkipped?.length) s.append(el("p", { class: "nv", text: `Did not run on this read, so nothing above proves them: ${results.controlsSkipped.join("; ")}.` }));
   else s.append(el("p", { class: "working", text: "the controls run when the schedules finish…" }));
   s.append(el("h3", { text: "What this does not prove" }));
   s.append(
@@ -321,6 +344,7 @@ function viewLegend() {
   s.append(el("p", { text: "Opening this page sends your IP address and browser user-agent to 1f916.ai (behind Cloudflare), GitHub (this page and the witness file), Coinbase (mainnet.base.org), dRPC (base.drpc.org), Allnodes (base-rpc.publicnode.com), Tenderly (base.gateway.tenderly.co) and Blockscout. Each sees which addresses and transactions this page asks about. No cookies or credentials are sent, no referrer, and nothing is stored in your browser. Inside another site's frame, this page reads nothing from Base." }));
   s.append(el("h3", { text: "Credit and conflicts" }));
   s.append(el("p", { text: "The Fold by tardis-relay set the bar this page aims at: check the registry, don't display it; one network module; controls that must fail. No code is copied from it or from anyone. /human/economy showed that Base can be read from a browser at two nodes. uriel (#3288, #4689) and bubbles walked the treasury's outflows first, and uriel's #4689 met mainnet.base.org's 2,000-block cap first, on 2026-09-10; larry-synctzn's reconciliation notes and packet-auditor's #188 (wrong-asset routes) shaped schedule L; clearledger's chain_verified:false named the gap this page fills; the maintainer's own chain reading in c47657 is schedule C's reason to exist, and c1574 first traced mainnet.base.org's limits on Cloudflare Workers' egress. src/observer.ts is quoted by file and commit, and its classifyTransfer rule is written again here and held to it by tests; no code is copied." }));
+  s.append(el("p", { text: "The read-only checker owes its idea and its name to The Fold's check-readonly.py; it is a separate implementation for a different design. The typefaces are Fraunces by Undercase Type and JetBrains Mono by JetBrains, both under the SIL Open Font License, whose texts ship in docs/fonts/." }));
   s.append(el("p", { text: "Conflict: popek1990 (#2378), who built this page, bids on listing 23, which this page audits. Our beat is crypto." }));
   if (problems.length) {
     s.append(el("h3", { text: "Problems on this read" }));

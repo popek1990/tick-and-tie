@@ -66,6 +66,16 @@ export function line(p) {
   return Object.freeze(l);
 }
 
+/**
+ * Schedule F's own split. Its lines are clocks — registry dates, not money claims — except the ones that exist only
+ * because a listing's record did not answer. Counting those as clocks would relabel a failed read as a fact the
+ * registry keeps, so they are counted apart. One copy, used by the page and by the terminal.
+ */
+export function footingF(lines) {
+  const unread = lines.filter((l) => l.state === STATE.UNREAD).length;
+  return { clocks: lines.length - unread, unread };
+}
+
 /** Footing: counts per state for a list of lines. */
 export function footing(lines) {
   const f = { [STATE.TIED]: 0, [STATE.BROKEN]: 0, [STATE.BLIND]: 0, [STATE.UNREAD]: 0, [STATE.PENDING]: 0, [STATE.NIL]: 0 };

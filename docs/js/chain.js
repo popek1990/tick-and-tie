@@ -1,6 +1,6 @@
 // Reading Base at two nodes and deciding what the answers mean. This file is where "tied" is defined.
 //
-// A line is TIED only when all of this holds (research/critique-security.md §4.2):
+// A line is TIED only when all of this holds:
 //   - at least two nodes run by different operators answered, each on chain id 8453;
 //   - they agree on the block hash of the block in question, and on every decoded value;
 //   - that block is at or below the LOWER of their finalized heads;

@@ -5,7 +5,7 @@
 //
 // Why a baseline at all: walking 1.7M blocks of logs in a visitor's browser would be slow and rude to public
 // nodes, and Blockscout (the obvious shortcut) is wrong about this treasury. It shows 2,140 USDC against 28,810
-// on chain, because it never indexed the treasury's own 2026-09-09 swap (research/data.md §4). So the heavy walk
+// on chain, because it never indexed the treasury's own 2026-09-09 swap (checked against Base directly). So the heavy walk
 // happens once, here, and the page then CHECKS it rather than trusting it:
 //   - the start and end balances are re-read at two nodes, and the logs must foot to them;
 //   - every outflow the page talks about is re-read as a receipt at two nodes;

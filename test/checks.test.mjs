@@ -3,14 +3,16 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { decide, tieBalance, agreedValue, STATE } from "../docs/js/chain.js";
+import { footingF } from "../docs/js/lines.js";
+import { summary } from "../docs/js/run.js";
 import { classifyTransfer, nextObserverCall, catchUp, cycleMinutesOf, scheduleC } from "../docs/js/checks/observer.js";
-import { matchRow, onchainCentsLine, PAYOUT_WALLET } from "../docs/js/checks/books.js";
+import { matchRow, onchainCentsLine, PAYOUT_WALLET, scheduleD } from "../docs/js/checks/books.js";
 import { censusOf, censusHeadline } from "../docs/js/checks/census.js";
 import { foldExhibits } from "../docs/js/checks/forgeries.js";
 import { firstWitnessed } from "../docs/js/checks/receipts.js";
 import { scheduleF } from "../docs/js/checks/clocks.js";
-import { linkHref, saysKind } from "../docs/js/ui.js";
-import { USDC, TOKEN, ranges } from "../docs/js/codec.js";
+import { linkHref, saysKind, el } from "../docs/js/ui.js";
+import { USDC, TOKEN, ranges, readError } from "../docs/js/codec.js";
 
 const bal = (v) => ({ value: v });
 const rule = (claim) => ({ same: (a, b) => a.value === b.value, matchesClaim: (v) => v.value === claim, blockOf: (v) => v.block ?? null, minFinal: 100 });
@@ -200,4 +202,73 @@ test("a clock whose listing did not answer stays on the page as not read, from t
   assert.equal(l.state, STATE.UNREAD);
   assert.match(l.sentence.join(""), /0\.10 USDC is owed on listing 28 \(1 payable\)/);
   assert.match(l.why, /^not read: GET \/api\/listings\/28: .*HTTP 429 without CORS headers/);
+});
+
+test("F: a listing whose own amounts do not parse stays on the page, and is not counted as a clock", async () => {
+  const listing = (id, due) => ({ listing_id: id, asset: { chain_id: 8453, token: USDC }, award_states: { payable: 1 }, economics: { outstanding_awarded_atomic: due, currently_due_atomic: due, overdue_unpaid_atomic: "0" } });
+  // "12.5" is not an atomic integer: parseAtomic returns null. Rounding that down to zero would drop the listing.
+  const rail = { now: 1789000000000, listings: [listing(31, "12.5"), { ...listing(32, "0"), award_states: { paid: 1 } }] };
+  const ctx = { docs: { rail }, readAt: "test", minFinal: 100, listingDetail: async () => ({ ok: false, status: 0, error: "Failed to fetch" }) };
+  const lines = await scheduleF(ctx);
+  assert.equal(lines.length, 1, "listing 32 owes nothing; listing 31's unreadable figure keeps it here");
+  assert.equal(lines[0].ref, "F-31");
+  assert.equal(lines[0].state, STATE.UNREAD);
+  assert.match(lines[0].sentence.join(""), /an amount this page could not read is owed/);
+  assert.doesNotMatch(lines[0].sentence.join(""), /0\.00 USDC/, "a figure that does not parse is never printed as zero");
+});
+
+test("D: without the committed baseline the books say not read, and D-5 stays on the page", async () => {
+  const treasury = { entries: [], onchain_cents: null, onchain_checked_at: null, assets: {} };
+  const ctx = { docs: { treasury, checkpoint: { checkpoints: [] } }, baseline: null, minFinal: 51_200_000, headRef: null, readAt: "test", registryKey: null };
+  const lines = await scheduleD(ctx);
+  const d4 = lines.find((l) => l.ref === "D-4");
+  const d5 = lines.find((l) => l.ref === "D-5");
+  assert.ok(d4, "D-4 is on the page");
+  assert.equal(d4.state, STATE.UNREAD, "no baseline is not an empty list of outflows");
+  assert.notEqual(d4.mark, "—");
+  assert.match(d4.sentence.join(""), /were not read on this visit/);
+  assert.doesNotMatch(d4.sentence.join(""), /^0 out/, "never a count of zero");
+  assert.ok(d5, "D-5 does not vanish when it cannot be computed");
+  assert.equal(d5.state, STATE.UNREAD);
+  assert.match(d5.why, /not read: data\/baseline\.json did not load/);
+});
+
+test("F's bar counts clocks and not-read lines apart, in one place for page and terminal", () => {
+  const l = (state) => ({ state });
+  assert.deepEqual(footingF([l(STATE.UNREAD), l("clock"), l("clock")]), { clocks: 2, unread: 1 });
+  assert.deepEqual(footingF([l("clock")]), { clocks: 1, unread: 0 });
+  assert.deepEqual(footingF([]), { clocks: 0, unread: 0 });
+});
+
+test("a fetch failure becomes the same words everywhere", () => {
+  for (const raw of ["Failed to fetch", "fetch failed", "TypeError: Failed to fetch", "NetworkError when attempting to fetch resource."]) {
+    assert.match(readError(raw), /HTTP 429 without CORS headers/, raw);
+  }
+  assert.equal(readError("HTTP 500"), "HTTP 500", "a status the browser did show is passed through");
+  assert.equal(readError(null), "not read");
+});
+
+test("el() refuses every attribute that would load or style from a value", () => {
+  const had = "document" in globalThis;
+  globalThis.document = { createElement: () => ({ setAttribute() {}, append() {}, className: "", textContent: "" }) };
+  try {
+    for (const k of ["src", "srcset", "style", "formaction", "action", "poster", "background"]) {
+      assert.throws(() => el("img", { [k]: "https://evil.example/x" }), /not settable/, k);
+    }
+    assert.throws(() => el("a", { href: "#/a" }), /safeLink/);
+    assert.throws(() => el("div", { onclick: "x" }), /no inline handlers/);
+    assert.doesNotThrow(() => el("div", { class: "x", text: "y", title: "z" }));
+  } finally {
+    if (!had) delete globalThis.document;
+  }
+});
+
+test("the status line never reports controls that did not run as controls that passed", () => {
+  const base = { ctx: { readAt: "2026-09-12 09:00:00Z" }, results: { controls: [], controlsSkipped: [] }, problems: [] };
+  assert.match(summary(base), /controls: none ran on this read/);
+  assert.doesNotMatch(summary(base), /0\/0 as they must/, "a skipped self-test must never read as a passed one");
+  const partial = { ...base, results: { controls: [{ pass: true }, { pass: true }], controlsSkipped: ["the witness consistency proof (3): not read"] } };
+  const s = summary(partial);
+  assert.match(s, /controls: 2\/2 as they must/);
+  assert.match(s, /1 group did not run/, "a group whose inputs were not read is named, not silently dropped");
 });

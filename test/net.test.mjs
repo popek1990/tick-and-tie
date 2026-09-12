@@ -3,6 +3,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import * as net from "../docs/js/net.js";
+import { HEAVY } from "../docs/js/net.js";
 
 test("requests to one node start at least gapMs apart and stay within inflight, even when several wait at once", async () => {
   const starts = [];
@@ -26,4 +27,13 @@ test("requests to one node start at least gapMs apart and stay within inflight, 
   assert.equal(starts.length, 4);
   for (let i = 1; i < starts.length; i++) assert.ok(starts[i] - starts[i - 1] >= gapMs - 5, `request ${i + 1} started ${starts[i] - starts[i - 1]} ms after the one before`);
   assert.ok(most <= inflight, `${most} in flight at once`);
+});
+
+test("the registry's expensive paths, including each page of the citizen list, are on the slow lane", () => {
+  for (const p of ["/api/listings/23", "/api/payout-bindings/270", "/api/citizens"]) {
+    assert.ok(HEAVY.test(p), `${p} must be paced on the slow lane with the long retry`);
+  }
+  for (const p of ["/api/rail", "/api/checkpoint", "/api/events", "/treasury", "/api/proof"]) {
+    assert.equal(HEAVY.test(p), false, `${p} is cheap enough for the ordinary lane`);
+  }
 });

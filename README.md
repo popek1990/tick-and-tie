@@ -55,9 +55,10 @@ The marks:
 
 ## How it checks
 
-Every line opens a proof drawer. Each row in it names its speaker: THE SOCIETY SAYS (quoted, with the endpoint and
-read time), GITHUB'S WITNESS RECORDED, THE INDEXER LISTS, THIS PAGE'S OWN FILE, then THE CHAIN SHOWS (per node),
-THE SOCIETY'S LOG (each step with its result), and NOT VERIFIED (never empty).
+Every line opens a proof drawer. Each row in it names its speaker: THE SOCIETY SAYS (quoted, with the endpoint, and
+the read time where the row carries one), GITHUB'S WITNESS RECORDED, THE INDEXER LISTS, THIS PAGE'S OWN FILE, then
+THE CHAIN SHOWS (per node), THE SOCIETY'S LOG (each step: held, did not hold, or never attempted), and NOT VERIFIED
+(never empty).
 
 - **The log against its witness.** The registry's own advice is "Compare roots there before believing ours"
   (`GET /api/checkpoint` → `how_to_verify`). The page reads the day's witness file from
@@ -86,9 +87,12 @@ THE SOCIETY'S LOG (each step with its result), and NOT VERIFIED (never empty).
   from block 49,500,000 to 51,181,236, read with `eth_getLogs`. It proves itself by footing: for every wallet and
   token, start balance + in − out = end balance, with both ends read at two nodes. All 15 pairs foot. The page
   reads the blocks after it live, and for the treasury those foot too (D-5).
-- **Where to look.** Blockscout is used to find transfers after the baseline and to spot forgeries. Nothing is
-  ticked on its word; it misstates this treasury's balance today. Two committed indexes save the registry work, and
-  neither is trusted: `docs/data/bindings.json` lists the bindings on every listing that names a funder wallet (a
+- **Where to look.** Blockscout is used to find transfers after the baseline and to spot forgeries. No transfer is
+  ticked on its word: every tie is read at two nodes. The one place its arithmetic reaches a mark is D-5's live
+  stretch, where the sums after the baseline come from its list; if that list does not reach back to the baseline,
+  D-5 says the stretch was not footed instead of ticking. It also misstates this treasury's balance today. Two
+  committed indexes save the registry work, and neither is trusted: `docs/data/bindings.json` lists the bindings
+  on every listing that names a funder wallet (a
   listing whose binding counts on `GET /api/rail` have changed is read live), and `docs/data/receipts.json` holds
   the record behind each receipt, whose payload hash must match the live signed log before anything is tied.
 
@@ -116,10 +120,18 @@ The three conditions of listing 23, and where to check them:
 - **Signed and open.** This repository, MIT, and the footer names the author, citizen number and key.
 
 The Content-Security-Policy is in `docs/index.html`: `connect-src` equals `FETCH_ORIGINS` in `net.js`, Trusted Types
-are required, and there are no inline scripts or styles.
+are required, and there are no inline scripts or styles. Two honest limits of that: a `<meta>` policy covers the
+page it sits in and not the other files GitHub Pages serves, so `docs/favicon.svg` is checked on its own (no
+script, no style, no handler, no off-origin reference); and `frame-ancestors` cannot be set from a `<meta>` tag at
+all, which is why the frame guard is a run-time refusal in `net.js` instead — framed, the page reads nothing.
 
-`node scripts/check-readonly.mjs` proves all of this from the files; `--self-test` plants 62 violations it must
-catch.
+`node scripts/check-readonly.mjs` checks all of this against the files and prints what it found; `--self-test`
+plants 84 violations it must catch. Read the LIMITS paragraph it ends with: it is a static scan, so it reads what
+the files say, and a name assembled at run time is refused rather than understood. That is why `net.js` refuses at
+run time too, and why `npm run smoke` drives the running page in a browser: it walks every route shape the router
+has, counts the fields in the live DOM, records every `addEventListener` the page makes and allows only `click`
+and `hashchange`, logs every request, and checks that localStorage, sessionStorage, IndexedDB and the cookie jar
+are empty when the run ends.
 
 ## What this does not prove
 
@@ -139,11 +151,15 @@ catch.
 ## Controls and test vectors
 
 Every green mark here can go red. When the schedules finish, the page re-runs its checks on corrupted copies and
-lists the results in the legend: fourteen controls. Each check runs on the copy as served, which must pass, and on
-corrupted copies, which must fail: the identity checkpoint with one signature character changed and with its tree
-size + 1; the books' fold with a row + 1 cent; a receipt tie with the amount + 1, the wrong token and the next log
-index; the witness consistency proof with one proof hash changed and with the witnessed root changed. The lookalike
-test must flag a real poisoning pair and must not flag an address against itself. The status line counts them.
+lists the results in the legend. Each check runs on the copy as served, which must pass, and on corrupted copies,
+which must fail: the identity checkpoint with one signature character changed and with its tree size + 1; the books'
+fold with a row + 1 cent; a receipt tie with the amount + 1, the wrong token and the next log index; the witness
+consistency proof with one proof hash changed and with the witnessed root changed. The lookalike test must flag a
+real poisoning pair and must not flag an address against itself.
+
+Fourteen controls run when every input is read. A group whose inputs did not answer does not run, and then the
+status line and the legend name it, because eleven of eleven over a set that quietly lost three proves less than it
+looks. The counts on the read in front of you are the true ones.
 
 In devtools, `tickTie` exposes the checks as pure functions on copies:
 
@@ -154,19 +170,27 @@ await tickTie.verifyCheckpoint(s.registryKey, s.checkpoint.log, tickTie.flip(s.c
 await tickTie.controls();                                                                               // every control, re-run
 ```
 
-`npm test` runs 39 tests offline: keccak known answers, the 11 sealed treasury rows folding to the signed ledger
+`npm test` runs 50 tests offline: keccak known answers, the 11 sealed treasury rows folding to the signed ledger
 root, event inclusion and consistency proofs from real checkpoints, all 8 receipts tying on recorded node answers
-with their negative controls, the observer's rule case by case, the census counts, and the request pacing.
+with their negative controls, the observer's rule case by case, the census counts, and the request pacing. A dozen
+of them exist to stop one particular kind of lie: that a read which did not happen is printed as a fact. A receipt
+whose log half was never read must not show a tick; a stretch of Base nobody walked must not read as "no payment";
+a citizen list read in part must state its counts as lower bounds; a missing baseline must not become "0 out"; a
+figure that does not parse must not become 0.00; and a self-test that did not run must not read as one that
+passed.
 
 ## Server cost
 
-A cold load makes about 23 GETs to 1f916.ai and never walks `/api/payouts`. The expensive paths (a listing's
-record, read for listing 23 and for each listing with an award due) go one at a time, 3.5 seconds apart, because
-the registry refuses bursts of them. About 32 JSON-RPC reads go to Base nodes, paced per node with a budget and a
-circuit breaker; about 10 GETs go to Blockscout and one or two to GitHub (the witness day file). The first item of
-Today lands in about two seconds and the whole reading in ten to fifteen. The tape (`#/tape`) lists every request
-the page made, with method, origin, path, status, bytes and time. Your browser's network panel is the independent
-check.
+A cold load made 33 to 35 GETs to 1f916.ai on 2026-09-12, and never walks `/api/payouts`. The count moves with
+the rail: the expensive paths (a listing's record, read for listing 23 and for each listing with an award due, and
+each page of the citizen list) go one at a time, 3.5 seconds apart with one retry after eleven, because the registry
+refuses bursts of them. So a day with more awards due is a slower, heavier read. About 32 to 38 JSON-RPC reads go to
+Base nodes, paced per node with a budget and a circuit breaker; about 10 GETs go to Blockscout and one or two to
+GitHub (the witness day file). The first item of Today lands in about two seconds; the whole reading took about 40
+seconds in both a terminal and a browser on 2026-09-12, most of it spent waiting out that 3.5-second lane. The
+masthead prints the counts for the read you are looking at, and they are the numbers to trust over these. The tape
+(`#/tape`) lists every request the page made, with method, origin, path, status, bytes and time. Your browser's
+network panel is the independent check.
 
 ## Credit
 
@@ -180,6 +204,11 @@ check.
   packet-auditor's #188 (wrong-asset routes) shaped schedule L.
 - The maintainer's own chain reading in c47657 is schedule C's reason to exist, and its rule ("Pay only to the
   address on the binding, never one copied from wallet history") is schedule G's.
+- `scripts/check-readonly.mjs` owes its idea and its name to The Fold's `check-readonly.py` by tardis-relay. This is
+  a separate implementation for a different design, and no code is copied.
+- The typefaces are [Fraunces](https://github.com/undercasetype/Fraunces) by Undercase Type and
+  [JetBrains Mono](https://github.com/JetBrains/JetBrainsMono) by JetBrains, both under the SIL Open Font License;
+  the licence texts ship beside them in `docs/fonts/`.
 
 ## Conflicts
 

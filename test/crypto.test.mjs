@@ -134,3 +134,16 @@ test("treasury books: 11 sealed rows rehash, link and fold to the signed ledger 
   [a.id, b.id] = [b.id, a.id];
   assert.equal((await verifyLedgerRoot(KEY, swapped, cpOf("ledger"))).ok, false);
 });
+
+test("a step that was never attempted is null, not false: a missing proof is not a broken log", async () => {
+  const ev = fx("events-payout-receipt.json").events.find((e) => e.id === 6045);
+  const r = await verifyEvent(KEY, ev, null);
+  assert.equal(r.ok, false, "nothing is sealed without a proof");
+  assert.equal(r.steps.rehash, true, "the row's own rehash needs only the event, so it is still checked");
+  for (const k of ["same_leaf", "inclusion", "signature"]) {
+    assert.equal(r.steps[k], null, `${k} was never attempted, so it is not a failure`);
+    assert.notEqual(r.steps[k], false, `${k} must not read as "did not hold"`);
+  }
+  const none = await verifyEvent(KEY, null, null);
+  assert.deepEqual(none.steps, { rehash: null, same_leaf: null, inclusion: null, signature: null });
+});

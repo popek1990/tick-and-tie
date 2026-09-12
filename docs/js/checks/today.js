@@ -8,10 +8,10 @@
 // Each item is built as soon as its own inputs land (the first in about five seconds); the observer item gains
 // schedule C's count when C finishes.
 
-import { replay, KEYED_RANGE, CAPPED_RANGE, catchUp, cycleMinutesOf, hoursText } from "./observer.js";
+import { replay, KEYED_RANGE, CAPPED_RANGE, catchUp, cycleMinutesOf, hoursText, BLOCK_SECONDS } from "./observer.js";
 import { groupInt, short, plural } from "../codec.js";
 
-const DAY_BLOCKS = 43_200;
+const DAY_BLOCKS = 43_200; // one day at BLOCK_SECONDS
 
 /** Item 1, with its replay: needs only GET /api/rail and the finalized head. Null when no mark is behind. */
 export async function observerItem(ctx) {
@@ -21,10 +21,11 @@ export async function observerItem(ctx) {
   const behind = marks.filter((m) => Number.isInteger(m.last_block) && ctx.minFinal - m.last_block > DAY_BLOCKS).sort((a, b) => b.last_block - a.last_block);
   if (!behind.length && !never.length) return null;
   const current = marks.length - behind.length - never.length;
-  const days = behind.map((x) => Math.round(((ctx.minFinal - x.last_block) * 2) / 86400));
+  // Blocks → days assumes Base's 2-second block, so this is an estimate and says so, exactly as schedule C does.
+  const days = behind.map((x) => Math.round(((ctx.minFinal - x.last_block) * BLOCK_SECONDS) / 86400));
   const lo = Math.min(...days);
   const hi = Math.max(...days);
-  const span = lo === hi ? `${lo} days` : `${lo} to ${hi} days`;
+  const span = lo === hi ? `≈${lo} ${lo === 1 ? "day" : "days"}` : `≈${lo} to ${hi} days`;
   const counts = [
     behind.length ? `${behind.length} ${behind.length === 1 ? "is" : "are"} ${span} behind finality` : null,
     current ? `${current} ${current === 1 ? "is" : "are"} current` : null,

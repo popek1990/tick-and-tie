@@ -239,7 +239,11 @@ function parseJson(r) {
 // out of two, and a retry six seconds later too; three and a half seconds apart, none was. Those paths go one at
 // a time, 3.5 s apart, retry once after eleven, and the page asks for as few as it can: receipts and funder
 // bindings come from committed indexes the page re-checks, and a listing that stays unread says so.
-const HEAVY = /^\/api\/(listings|payout-bindings)\/\d+$/;
+// A page of the citizen list costs the registry about as much (2,415 citizens over three pages, ~120 KB each). On
+// 2026-09-12 a browser's second page was refused twice on the ordinary lane, 3 s apart, and the census then counted
+// only the citizens it had: the paged list belongs on the slow lane with the long retry.
+// Exported so a test can pin which paths are on the slow lane; the lesson is in the comment above.
+export const HEAVY = /^\/api\/(listings|payout-bindings)\/\d+$|^\/api\/citizens$/;
 const HEAVY_GAP_MS = 3500;
 
 /** GET from the registry. Returns {ok, json} or {ok:false, error}. Never throws for network trouble. */

@@ -183,6 +183,8 @@ export async function scheduleD(ctx) {
     }
   }
   const liveNotes = [];
+  // Without the committed baseline nothing here is a count of what the treasury sent: an empty list is "not read".
+  if (!base) liveNotes.push("data/baseline.json did not load, so no outflow could be listed and no footing attempted");
   let liveIn = 0n;
   let liveOut = 0n;
   let liveOk = false;
@@ -228,10 +230,13 @@ export async function scheduleD(ctx) {
       ref: "D-4",
       schedule: "D",
       route: "#/d/4",
-      state: items.length === 0 ? STATE.NIL : anyUnread ? STATE.UNREAD : STATE.TIED,
-      why: anyUnread ? "at least one outflow was not tied at two nodes; see its row" : "every outflow listed ties at two nodes",
+      // No baseline is not an empty list of outflows: it is no list at all, and says so.
+      state: !base ? STATE.UNREAD : items.length === 0 ? STATE.NIL : anyUnread ? STATE.UNREAD : STATE.TIED,
+      why: !base ? "not read: data/baseline.json did not load, so the outflows were never listed" : anyUnread ? "at least one outflow was not tied at two nodes; see its row" : "every outflow listed ties at two nodes",
       title: "outflows from the treasury wallet",
-      sentence: [`${items.length} out · ${named.length} named by a row · ${conversions.length} conversion${conversions.length === 1 ? "" : "s"} · ${unnamed.length} named by no row.`],
+      sentence: base
+        ? [`${items.length} out · ${named.length} named by a row · ${conversions.length} conversion${conversions.length === 1 ? "" : "s"} · ${unnamed.length} named by no row.`]
+        : ["The treasury's outflows were not read on this visit: the page's own baseline file did not load, so this is not a count of zero."],
       says: [
         { label: "the books' rule", value: "Spent only when earned dollars are exhausted, with the same public ledger line as everything else.", source: "GET /treasury → spending_policy.waterfall[1].rule", readAt },
         { label: "window", value: base ? `from block ${groupInt(base.from_block)} (${base.from_block_time}) to ${groupInt(ctx.minFinal)}` : "baseline not loaded", source: "data/baseline.json + live", kind: "file" },
@@ -286,6 +291,22 @@ export async function scheduleD(ctx) {
         ],
         says: [{ label: "baseline", value: `${base.logs.length} logs, built ${base.built_at}, blocks ${base.from_block}–${base.to_block}, ${base.method}`, source: "data/baseline.json (rebuild: node tools/build-baseline.mjs)", kind: "file" }],
         notVerified: [...(base.limits ?? []), ...liveNotes],
+      })
+    );
+  } else {
+    // The footing needs the baseline's two endpoints. Without them the line stays on the page as not read, rather
+    // than disappearing and leaving the reader to notice that D-5 is missing.
+    lines.push(
+      line({
+        ref: "D-5",
+        schedule: "D",
+        route: "#/d/5",
+        state: STATE.UNREAD,
+        why: "not read: data/baseline.json did not load, so there are no endpoints to foot between",
+        title: "the footing: the treasury's USDC flows add up to its balance",
+        sentence: ["The footing was not attempted on this visit: the page's own baseline file did not load."],
+        says: [{ label: "baseline", value: "not read", source: "data/baseline.json (rebuild: node tools/build-baseline.mjs)", kind: "file" }],
+        notVerified: ["the treasury's flows against its balance: not read on this visit", ...liveNotes],
       })
     );
   }

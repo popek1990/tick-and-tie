@@ -1,11 +1,13 @@
 #!/usr/bin/env node
 // check-readonly.mjs · TICK & TIE
 //
-// Proves from the files alone (no network by default) the three conditions of listing 23:
+// Checks, from the files alone (no network by default), the three conditions of listing 23:
 //   1. the page reads and never writes ........ R1–R10
-//   2. there is nowhere to type ................ T1–T4   (T5, the live DOM and network log, is test/smoke.mjs)
+//   2. there is nowhere to type ................ T1–T4
 //   3. it is signed and its source is open ..... S1–S7
 //   plus hygiene ............................... H1–H4
+// The live DOM, the listeners a run really registers and the network log of a real browser are test/smoke.mjs; this
+// script cannot stand in for it, and says so in LIMITS.
 // Every check prints its ID. Every FAIL prints file:line and the offending line.
 //
 // Usage (Node >= 22, standard library only; exit 0 = pass, 1 = a check failed, 2 = usage or internal error):
@@ -18,7 +20,10 @@
 //   node scripts/check-readonly.mjs --root DIR       check another checkout
 //
 // How: JS is read by a small tokenizer that knows comments, strings, template literals and regex literals, so a
-// word inside a comment (net.js's header literally says "fetch() call site") never counts as code. docs/js/net.js
+// word inside a comment (net.js's header literally says "fetch() call site") never counts as code. Markup is read
+// twice: once with an exact attribute parser, once permissively, because `<input name=a"b>` and `<input data/x>`
+// defeat the first and Chromium builds a real field from both. Served .svg files are read in their own right: the
+// CSP is a <meta> tag inside index.html and does not reach a file Pages serves at its own URL. docs/js/net.js
 // is IMPORTED, not grepped: the CSP, the RPC allowlist and the selectors are compared with the values the page
 // really runs, and R8 drives net.js through a stub fetch with 60+ cases, so no byte leaves this machine. Planted
 // violations live as strings in this file and are only ever written into a temporary copy under os.tmpdir().
@@ -91,7 +96,10 @@ const CSP = {
   "require-trusted-types-for": ["'script'"], "trusted-types": ["'none'"],
 };
 const CSP_IGNORED_IN_META = ["frame-ancestors", "report-uri", "report-to", "sandbox"];
-const LINK_DEFAULT = ["https://1f916.ai", "https://1f916.org", "https://github.com", "https://base.blockscout.com", "https://basescan.org", "https://popek1990.github.io"];
+// The ceiling for links (R4). Exactly what the page needs: ui.js linkHref() builds "citizen" and "api" hrefs on
+// 1f916.ai and "tx"/"address" hrefs on base.blockscout.com, and the footer and the <noscript> name the source repo on
+// github.com. net.js LINK_ORIGINS may be shorter than this; anything longer is a finding.
+const LINK_DEFAULT = ["https://1f916.ai", "https://base.blockscout.com", "https://github.com"];
 const XMLNS = ["http://www.w3.org/2000/svg", "http://www.w3.org/1999/xlink", "http://www.w3.org/1999/xhtml", "http://www.w3.org/XML/1998/namespace", "http://www.w3.org/2000/xmlns/"];
 const FORBIDDEN_TAGS = ["input", "textarea", "select", "form", "option", "optgroup", "datalist", "output", "label", "fieldset", "legend", "iframe", "frame", "frameset", "object", "embed", "portal", "foreignobject", "keygen", "isindex", "applet"];
 const TEXT_ROLES = ["textbox", "searchbox", "combobox", "spinbutton"];
@@ -329,9 +337,52 @@ function fnBody(js, name) {
   return end < 0 ? null : [k, end + 1];
 }
 
+/** The arguments of the call whose "(" is at `open`, as [start, end) ranges split at top-level commas; null if unclosed. */
+function callArgs(code, open) {
+  const end = closer(code, open);
+  if (end < 0) return null;
+  const out = [];
+  let depth = 0;
+  let from = open + 1;
+  for (let k = open + 1; k < end; k++) {
+    const c = code[k];
+    if (c === "(" || c === "[" || c === "{") depth++;
+    else if (c === ")" || c === "]" || c === "}") depth--;
+    else if (c === "," && depth === 0) {
+      out.push([from, k]);
+      from = k + 1;
+    }
+  }
+  out.push([from, end]);
+  return out;
+}
+
+/**
+ * How a name was written, over the range [a, b) of one expression:
+ *   "literal"   a plain "x", 'x' or `x` with nothing substituted — the files say what it is
+ *   "variable"  a bare identifier: the value is handed in from somewhere else (ui.js el(tag, props) does this)
+ *   "built"     assembled in place: "in" + "put", ["key","down"].join(""), `on${k}`, f() — no file says what it is
+ * The test reads the masked copy, where a string's contents are blanked and its quotes are not, so a literal is a
+ * pair of quotes around nothing and a substituted template still shows its "${".
+ */
+function nameShape(s, range) {
+  let masked = s.code.slice(range[0], range[1]).trim();
+  while (masked.startsWith("(") && masked.endsWith(")") && closer(masked, 0) === masked.length - 1) masked = masked.slice(1, -1).trim();
+  if (!masked) return "empty";
+  if (/^(["'`])\s*\1$/.test(masked)) return "literal";
+  if (/^[A-Za-z_$][\w$]*$/.test(masked)) return "variable";
+  return "built";
+}
+const BUILT = "a name built at run time cannot be audited from the files";
+
 // ---- HTML tokenizer -------------------------------------------------------------------------------------------
 // Comments blanked; tags with parsed attributes; the contents of <script> and <style> kept aside, never parsed as
 // markup. Browsers treat "<input>" in running text as an element, so it counts here too (write "input field").
+//
+// Two passes, because the strict one can be talked out of seeing a tag at all. Its attribute shape is exact, so
+// `<input name=a"b>` and `<input data/x>` match nothing — while Chromium builds a real <input> for both. The second
+// pass is permissive: every "<name" followed by a delimiter, whatever comes next. `loose[i].parsed` says whether the
+// strict pass produced a tag at that same offset, so T1 can report the unparsed ones in their own words.
 export function scanHtml(src) {
   const clean = src.replace(/<!--[\s\S]*?(?:-->|$)/g, (m) => m.replace(/[^\n]/g, " "));
   const tags = [];
@@ -354,7 +405,9 @@ export function scanHtml(src) {
       re.lastIndex = e ? endRe.lastIndex : clean.length;
     }
   }
-  return { src, clean, tags, raw, ...lines(src) };
+  const parsedAt = new Set(tags.map((t) => t.start));
+  const loose = [...clean.matchAll(/<(\/?)([A-Za-z][\w:-]*)(?=[\s/>]|$)/g)].map((m) => ({ name: m[2].toLowerCase(), closing: m[1] === "/", start: m.index, parsed: parsedAt.has(m.index) }));
+  return { src, clean, tags, raw, loose, ...lines(src) };
 }
 
 /** A CSS file with comments blanked. */
@@ -523,6 +576,19 @@ function R2(ctx) {
     grep(F, j.rel, j.s, j.s.codeStr, /\[\s*(["'`])(src|srcset)\1\s*\]\s*=(?!=)/g, (m) => `["${m[2]}"] = (loads a URL)`);
     grep(F, j.rel, j.s, j.s.codeStr, /\b(?:window|globalThis|self)\s*\[\s*(["'`])(open|location)\1\s*\]|\blocation\s*\[\s*(["'`])(href|assign|replace)\3\s*\]/g, (m) => `${m[0].replace(/\s+/g, "")}: a navigation through a string key`);
     grep(F, j.rel, j.s, j.s.codeStr, /\bcreateElement(?:NS)?\s*\(\s*(?:[^,()]*,\s*)?(["'`])(script|img|link|iframe|audio|video|source|track|embed|object)\1/gi, (m) => `createElement("${m[2]}") can load a URL`);
+    // The same surfaces reached through a computed key, which the rules above cannot read: globalThis[k],
+    // navigator["send" + "Beacon"], new (globalThis["XML" + "HttpRequest"])(). A key on one of these five objects
+    // must be written out as a plain string literal, so that this file can say which property it is.
+    for (const m of j.s.code.matchAll(/(?<![\w$])(globalThis|window|self|navigator|document)\s*\[/g)) {
+      const open = m.index + m[0].length - 1;
+      const close = closer(j.s.code, open);
+      if (close < 0) continue;
+      const shape = nameShape(j.s, [open + 1, close]);
+      if (shape !== "literal") F.push(hitAt(j.rel, j.s, m.index, `${m[1]}[…]: a computed key, ${shape === "variable" ? "held in a variable" : "assembled where it is used"} — ${BUILT}, so a network, storage or wallet property could hide here`));
+    }
+    // …and the object itself must be named where it is used: an alias (const g = globalThis) puts every later property
+    // access out of reach of the rule above. The page never takes one.
+    grep(F, j.rel, j.s, j.s.code, /(?<![=!<>])=(?!=)\s*(globalThis|window|self|navigator|document)\b(?![.[])/g, (m) => `an alias of ${m[1]}: every property read through it afterwards is out of this scan's reach (name the property where it is used)`);
     for (const m of j.s.code.matchAll(/(?<![\w$.])import\s*\(/g)) {
       const after = j.s.codeStr.slice(m.index + m[0].length).match(/^\s*(["'])(\.{1,2}\/[^"'\n]+\.js)\1\s*\)/);
       if (!after) F.push(hitAt(j.rel, j.s, m.index, "import() of something other than a relative .js literal"));
@@ -546,7 +612,7 @@ function R2(ctx) {
     }
   }
   const js = ctx.js.length;
-  return result("R2", "one network sink", F, `${fetchAt.join(", ") || "no"} fetch() · 0 XHR/beacon/WebSocket/EventSource/worker/Image in ${plural(js, "JS file")} · imports relative .js only`);
+  return result("R2", "one network sink", F, `${fetchAt.join(", ") || "no"} fetch() · 0 XHR/beacon/WebSocket/EventSource/worker/Image in ${plural(js, "JS file")} · every key on globalThis/window/self/navigator/document written out as a string literal, none computed, none of the five aliased · imports relative .js only`);
 }
 
 function R3(ctx) {
@@ -614,7 +680,11 @@ function R4(ctx) {
   const F = [];
   const fo = ctx.mods.net?.FETCH_ORIGINS ?? [];
   const fetchOrigins = new Set(fo.map((o) => new URL(o).origin));
-  const links = ctx.mods.net?.LINK_ORIGINS ?? LINK_DEFAULT;
+  // The audited list decides what a link may point at, and LINK_DEFAULT is the ceiling this script pins: the list in
+  // net.js may be shorter, never longer. Without this, R4 would read its allowlist out of the file it is auditing.
+  const exported = ctx.mods.net?.LINK_ORIGINS;
+  const links = exported ?? LINK_DEFAULT;
+  for (const o of exported ?? []) if (!LINK_DEFAULT.includes(o)) F.push(fileHit("docs/js/net.js", `LINK_ORIGINS allows ${o}, which this script's pinned ceiling does not (ceiling: ${LINK_DEFAULT.join(" ")})`));
   const table = new Map();
   const visit = (file, s, text) => {
     for (const m of text.matchAll(/\bhttps?:\/\/(?:(?!\$\{)[^\s"'`<>()\\,;])+/gi)) {
@@ -650,8 +720,10 @@ function R4(ctx) {
   for (const c of ctx.css) visit(c.rel, c.s, c.s.clean);
   for (const f of ctx.files.filter((x) => x.ext === ".json")) visit(f.rel, lines(f.text), f.text);
   const notes = [...table].sort().map(([o, r]) => `${o.padEnd(40)} ${[...r.roles].join("+").padEnd(10)} ${r.n}`);
-  if (!ctx.mods.net?.LINK_ORIGINS) notes.push("net.js exports no LINK_ORIGINS: links were checked against this script's default list; export one so safeLink() and this check share it");
-  return result("R4", "origins", F, `${table.size} origins in code, markup, CSS and data (comments excluded) · each in FETCH_ORIGINS, LINK_ORIGINS or an XML namespace`, notes);
+  notes.push(`net.js LINK_ORIGINS (${exported ? exported.length : 0}): ${exported ? exported.join(" ") : "not exported"}`);
+  notes.push(`pinned ceiling here (${LINK_DEFAULT.length}): ${LINK_DEFAULT.join(" ")}`);
+  if (!exported) notes.push("net.js exports no LINK_ORIGINS: links were checked against the ceiling above; export one so safeLink() and this check share it");
+  return result("R4", "origins", F, `${table.size} origins in code, markup, CSS and data (comments excluded) · each in FETCH_ORIGINS, LINK_ORIGINS or an XML namespace · LINK_ORIGINS within this script's pinned ceiling`, notes);
 }
 
 function R5(ctx) {
@@ -714,8 +786,32 @@ function R5(ctx) {
     }
   }
   for (const j of ctx.js) for (const s of j.s.strings) if (/^\s*javascript:/i.test(s.value)) F.push(hitAt(j.rel, j.s, s.start, "a javascript: URL"));
+  // Served SVG is outside the CSP above: that policy is a <meta> tag inside index.html, and Pages serves
+  // docs/favicon.svg at its own URL, where no policy applies and an SVG is a document that can carry script. So each
+  // .svg is read with the same rules as the page, plus its own: no <script>/<style>, no <foreignObject> (HTML, and
+  // fields, inside an image), and no reference off this origin (a reference in an icon is a request from every viewer).
+  const svgRefs = ["href", "xlink:href", "src", "xlink:src", "data", "poster"];
+  for (const v of ctx.svg) {
+    const at = (off, msg) => F.push(hitAt(v.rel, v.s, off, msg));
+    for (const l of v.s.loose) {
+      if (l.closing || !["script", "style", "foreignobject"].includes(l.name)) continue;
+      const how = l.parsed ? "" : " (its attributes do not parse, and a browser still builds it)";
+      at(l.start, l.name === "foreignobject" ? `<foreignObject> in a served SVG${how}: HTML, and fields, inside an image` : `<${l.name}> in a served SVG${how}: no policy covers this file at its own URL`);
+    }
+    for (const t of v.s.tags) {
+      if (t.closing) continue;
+      for (const [k, val] of Object.entries(t.attrs)) {
+        if (k === "style") at(t.start, `style= attribute on <${t.name}> in a served SVG`);
+        if (/^on[a-z]/.test(k)) at(t.start, `inline handler ${k}= on <${t.name}> in a served SVG (it runs when the SVG is opened at its own URL)`);
+        if (/^\s*javascript:/i.test(val)) at(t.start, `javascript: URL in ${k}= in a served SVG`);
+        if (svgRefs.includes(k) && val && !val.startsWith("#") && !isLocalRef(val)) at(t.start, `${k}=${val.slice(0, 60)} in a served SVG: not this origin (an icon must not fetch)`);
+        for (const m of String(val).matchAll(/url\(\s*["']?([^"')\s]*)/gi)) if (m[1] && !m[1].startsWith("#") && !isLocalRef(m[1])) at(t.start, `url(${m[1].slice(0, 50)}) in ${k}= in a served SVG: not this origin (an icon must not fetch)`);
+      }
+    }
+  }
   const sum = conn ? `connect-src == net.js FETCH_ORIGINS (${fo.length}) + 'self': ${conn.join(" ")}` : "the meta CSP as critique §3.5";
-  return result("R5", "CSP", F, `${sum} · worker-src/form-action/base-uri 'none' · Trusted Types · no unsafe-*, data:, blob:, * · no inline script/style/handlers`);
+  const svgSum = ctx.svg.length ? `${plural(ctx.svg.length, "served .svg")} read under the same rules (no <script>/<style>/<foreignObject>, no on*=, no javascript:, no off-origin reference), because a meta CSP does not reach a file at its own URL` : "no served .svg file";
+  return result("R5", "CSP", F, `${sum} · worker-src/form-action/base-uri 'none' · Trusted Types · no unsafe-*, data:, blob:, * · no inline script/style/handlers · ${svgSum}`);
 }
 
 function R6(ctx) {
@@ -1052,8 +1148,16 @@ function T1(ctx) {
       if (t.name === "button" && (t.attrs.type || "").toLowerCase() !== "button") at('<button> without type="button"');
       if ("srcdoc" in t.attrs) at("srcdoc= (markup from a string)");
     }
+    // The same list again over the permissive pass, for an opening tag the strict one could not parse: Chromium builds
+    // <input name=a"b> and <input data/x> as real elements (void or paired alike — the paired one's </textarea> parses
+    // and would be all this check saw), so a forbidden name must be a finding whatever the attributes look like.
+    for (const l of h.s.loose) {
+      if (l.closing || l.parsed || !FORBIDDEN_TAGS.includes(l.name)) continue;
+      F.push(hitAt(h.rel, h.s, l.start, `<${l.name} whose attributes do not parse: a browser still builds the element (a field, or form vocabulary, or a frame)`));
+    }
   }
-  return result("T1", "HTML", F, `0 input/textarea/select/form/option/datalist/output/label/fieldset/legend/iframe/object/embed/foreignObject · 0 contenteditable · 0 textbox roles · ${count.button} <button type="button">, ${count.details} <details>, ${count.dialog} <dialog>, ${count.a} links in ${plural(ctx.html.length, "page")}`);
+  const loose = [...ctx.html, ...ctx.svg].reduce((n, h) => n + h.s.loose.filter((l) => !l.closing).length, 0);
+  return result("T1", "HTML", F, `0 input/textarea/select/form/option/datalist/output/label/fieldset/legend/iframe/object/embed/foreignObject · 0 contenteditable · 0 textbox roles · ${count.button} <button type="button">, ${count.details} <details>, ${count.dialog} <dialog>, ${count.a} links in ${plural(ctx.html.length, "page")} · ${plural(loose, "opening tag")} also read permissively (a forbidden name counts even where its attributes do not parse)`);
 }
 
 /**
@@ -1071,8 +1175,17 @@ function reflectiveWrites(s) {
   return out;
 }
 
+// Positions where a name decides what an element is or does: [what it names, which argument, must be a literal].
+// createElementNS/setAttributeNS take the namespace first, so their name is the second argument.
+const NAMED_ARGS = {
+  addEventListener: ["event name", 0, true], removeEventListener: ["event name", 0, true],
+  createElement: ["tag name", 0, false], createElementNS: ["tag name", 1, false],
+  setAttribute: ["attribute name", 0, false], setAttributeNS: ["attribute name", 1, false],
+};
+
 function T2(ctx) {
   const F = [];
+  const handed = [];
   const tags = FORBIDDEN_TAGS.join("|");
   for (const j of ctx.js) {
     const g = (text, re, msg) => grep(F, j.rel, j.s, text, re, msg);
@@ -1085,6 +1198,18 @@ function T2(ctx) {
     g(j.s.codeStr, new RegExp(`\\baddEventListener\\s*\\(\\s*(["'\`])(${TYPING_EVENTS})\\1`, "g"), (m) => `a "${m[2]}" listener (input; <dialog> gives Esc without one)`);
     g(j.s.code, new RegExp(`\\.\\s*on(${TYPING_EVENTS})\\s*=(?!=)`, "g"), (m) => `on${m[1]} = (input)`);
     g(j.s.codeStr, /\bsetAttribute(?:NS)?\s*\(\s*(?:[^,()]*,\s*)?(["'`])(on[a-z]+|style)\1/gi, (m) => `setAttribute("${m[2]}")`);
+    // The rules above read names the files spell out. A name assembled where it is used — ["key","down"].join(""),
+    // "in" + "put", "content" + "editable" — reads the same to a browser and says nothing here, so the position itself
+    // is the rule: an event name must be a plain string literal; a tag or attribute name may also be a bare variable,
+    // because the page hands one along (ui.js el(tag, props), whose call sites are checked below) and the notes say where.
+    for (const m of j.s.code.matchAll(/(?<![\w$])(addEventListener|removeEventListener|createElement|createElementNS|setAttribute|setAttributeNS)\s*\(/g)) {
+      const [what, idx, literalOnly] = NAMED_ARGS[m[1]];
+      const range = callArgs(j.s.code, m.index + m[0].length - 1)?.[idx];
+      if (!range) continue;
+      const shape = nameShape(j.s, range);
+      if (shape === "built" || (literalOnly && shape === "variable")) F.push(hitAt(j.rel, j.s, m.index, `${m[1]}(): the ${what} is ${shape === "variable" ? "a variable, not a literal" : "assembled where it is used"} — ${BUILT}`));
+      else if (shape === "variable") handed.push(`${j.rel}:${j.s.lineOf(m.index)} ${m[1]}() takes its ${what} from a variable, so no file names it at this line; the names it is given are checked where they are written (the literals handed to an element factory, and the attribute keys in object literals)`);
+    }
     // href/src only through safeLink(), or as a same-document "#…" fragment
     const safe = fnBody(j.s, "safeLink");
     const ok = (off) => safe && off >= safe[0] && off < safe[1];
@@ -1127,12 +1252,18 @@ function T2(ctx) {
         const props = j.s.code[k] === "{" ? j.s.codeStr.slice(k, closer(j.s.code, k) + 1) : "";
         if (!/\btype\s*:\s*(["'])button\1/.test(props)) F.push(hitAt(j.rel, j.s, m.index, `${name}("button") without type: "button"`));
       }
+      // The same factory handed a tag assembled at the call site: el("in" + "put") builds what el("input") builds, and
+      // the literal rule above cannot read it.
+      for (const m of j.s.code.matchAll(new RegExp(`(?<![\\w$.])${escRe(name)}\\s*\\(`, "g"))) {
+        const range = callArgs(j.s.code, m.index + m[0].length - 1)?.[0];
+        if (range && nameShape(j.s, range) === "built") F.push(hitAt(j.rel, j.s, m.index, `${name}(): the tag name is assembled where it is used — ${BUILT}`));
+      }
     }
     grep(F, j.rel, j.s, j.s.codeStr, /[{,]\s*(["']?)(contenteditable|srcdoc)\1\s*:/gi, (m) => `an attribute key ${m[2]} (a generic attribute helper would set it)`);
     grep(F, j.rel, j.s, j.s.codeStr, /[{,]\s*(["']?)role\1\s*:\s*(["'`])(textbox|searchbox|combobox|spinbutton)\2/gi, (m) => `role: "${m[3]}"`);
   }
   const fac = factories.size ? ` · element factories checked: ${[...factories].map((f) => f + "()").join(", ")}` : "";
-  return result("T2", "JS", F, `0 key/input/paste/message listeners · 0 prompt/clipboard/designMode/contentEditable · 0 field tags built (createElement or a factory) · buttons typed · href/src only in safeLink() or as #fragments${fac}`);
+  return result("T2", "JS", F, `0 key/input/paste/message listeners · 0 prompt/clipboard/designMode/contentEditable · 0 field tags built (createElement or a factory) · buttons typed · every listener event a string literal, every tag and attribute name a literal or a variable handed along (${handed.length} of those, listed below), none assembled in place · href/src only in safeLink() or as #fragments${fac}`, handed);
 }
 
 function T3(ctx) {
@@ -1485,6 +1616,13 @@ const inFn = (name, fn) => inNet((s) => {
   return b ? s.slice(0, b[0]) + fn(s.slice(b[0], b[1])) + s.slice(b[1]) : s;
 });
 const inCss = (css) => (root) => (existsSync(join(root, "docs/style.css")) ? edit(root, "docs/style.css", (s) => `${s}\n${css}\n`) : put(root, "docs/style.css", `${css}\n`));
+// A served .svg is a document at its own URL, where the page's meta CSP does not reach: these plants edit the icon.
+const SVG_MIN = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16"><rect width="16" height="16" fill="none"/></svg>\n';
+const inSvg = (fn) => (root) => {
+  const p = "docs/favicon.svg";
+  return existsSync(join(root, p)) ? edit(root, p, fn) : put(root, p, fn(SVG_MIN));
+};
+const afterSvgTag = (snippet) => inSvg((s) => s.replace(/<svg\b[^>]*>/i, (m) => m + snippet));
 const P = (expect, what, plant) => ({ expect: [].concat(expect), what, plant });
 const PLANTS = [
   P("T1", '<input type="hidden"> in the page', inBody('<input type="hidden" name="k">')),
@@ -1493,6 +1631,9 @@ const PLANTS = [
   P("T1", 'role="searchbox"', inBody('<div role="searchbox">find</div>')),
   P("T1", "a <button> without type", inBody("<button>go</button>")),
   P("T1", "an <iframe>", inBody('<iframe src="about:blank"></iframe>')),
+  // Markup a strict attribute parser refuses and Chromium builds anyway: the second, permissive pass owns these.
+  P("T1", '<input name=a"b> (a void field whose attributes do not parse)', inBody('<input name=a"b>')),
+  P("T1", "<textarea data/x> (a paired field: only its closing tag parses)", inBody("<textarea data/x>type here</textarea>")),
   P("R1", "a 404.html (with a field) that Pages would serve", (r) => put(r, "docs/404.html", '<!doctype html><title>404</title><input name="q">\n')),
   P("R1", "a .wasm file in the served set", (r) => put(r, "docs/js/x.wasm", "\0asm")),
   P("T2", "a keydown listener", inJs('document.addEventListener("keydown", () => {});')),
@@ -1503,6 +1644,17 @@ const PLANTS = [
   P("T2", "a factory-built <button> without type", inJs('function mk(tag, props) { return document.createElement(tag); }\n  mk("button", { class: "x" });')),
   P("T2", "contenteditable as an attribute key", inJs('const props = { contenteditable: "true" };')),
   P("T2", 'an href written through a string key: a["href"] = …', inJs('const a = {}; a["href"] = "https://1f916.ai/api/porch/knock";')),
+  // Names assembled where they are used: each of these reads as a plain word to the browser and as nothing to a grep.
+  P("T2", 'a keylogger whose event name is joined at run time: ["key","down"].join("")', inJs('const typed = [];\n  document.addEventListener(["key", "down"].join(""), (e) => typed.push(e.key));')),
+  P("T2", 'createElement("in" + "put")', inJs('document.body.append(document.createElement("in" + "put"));')),
+  P("T2", 'setAttribute("content" + "editable")', inJs('document.body.setAttribute("content" + "editable", "true");')),
+  P("R2", 'document["design" + "Mode"] = "on"', inJs('document["design" + "Mode"] = "on";')),
+  P("R2", "fetch through a key held in a variable: globalThis[k]", inJs('const k = "fetch";\n  return globalThis[k]("https://1f916.ai/api/rail");')),
+  P("R2", 'navigator["send" + "Beacon"](…)', inJs('navigator["send" + "Beacon"]("https://1f916.ai/api/rail", "x");')),
+  P("R2", 'new (globalThis["Event" + "Source"])(…)', inJs('return new (globalThis["Event" + "Source"])("https://1f916.ai/api/rail");')),
+  P("R2", 'new (globalThis["XML" + "HttpRequest"])()', inJs('return new (globalThis["XML" + "HttpRequest"])();')),
+  P("R2", "an alias of globalThis, so the key rule cannot see the property", inJs('const g = globalThis;\n  return g["fe" + "tch"]("https://1f916.ai/api/rail");')),
+  P("T2", 'a factory handed a tag assembled at the call site: mk("in" + "put")', inJs('function mk(tag) { return document.createElement(tag); }\n  document.body.append(mk("in" + "put"));')),
   P("T4", "innerHTML set through Object.assign", inJs('Object.assign(document.body, { innerHTML: "x" });')),
   P("R2", 'fetch through a string key: globalThis["fetch"]', inJs('const f = globalThis["fetch"]; f("https://1f916.ai/api/rail");')),
   P("R2", "a fetch hidden after an object literal ({a:1}/fetch(…)/3)", inJs('return {a: 1}/fetch("https://1f916.ai/api/rail")/3;')),
@@ -1520,11 +1672,21 @@ const PLANTS = [
   P("R3", 'credentials: "include"', inNet((s) => s.replace(/credentials\s*:\s*(["'])omit\1/, 'credentials: "include"'))),
   P("R3", "an Authorization header on registry GETs", inFn("registry", (b) => b.replace(/accept\s*:\s*(["'])application\/json\1/, 'accept: "application/json", authorization: "Bearer x"'))),
   P("R4", "fonts.googleapis.com", inHead('<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Fraunces">')),
+  P("R4", "a link to an origin in neither list", inBody('<p><a href="https://1f916.org/protocol">the protocol</a></p>')),
+  P("R4", "LINK_ORIGINS grown past the ceiling pinned in this script", inNet((s) => s.replace(/(LINK_ORIGINS\s*=\s*Object\.freeze\(\s*\[)/, (m) => `${m}"https://basescan.org", `))),
   P("R5", "an extra connect-src origin", inCsp((c) => c.replace(/connect-src/, "connect-src https://evil.example"))),
+  P("R5", "connect-src missing an origin net.js still fetches", inCsp((c) => c.replace(" https://base.drpc.org", ""))),
   P("R5", "frame-ancestors in the meta CSP", inCsp((c) => `${c}; frame-ancestors 'none'`)),
   P("R5", "'unsafe-inline' in script-src", inCsp((c) => c.replace(/script-src 'self'/, "script-src 'self' 'unsafe-inline'"))),
   P("R5", "an inline <script>", inBody("<script>console.log(1)</script>")),
   P("R5", "a style= attribute", inBody('<p style="color:red">x</p>')),
+  // The icon is served at its own URL, where the meta CSP in index.html does not apply.
+  P("R5", "a <script> inside the served SVG", afterSvgTag("<script>x()</script>")),
+  P("R5", "a <script data/x> inside the served SVG (attributes that do not parse)", afterSvgTag("<script data/x>x()</script>")),
+  P("R5", "an onload= handler on the served SVG", inSvg((s) => s.replace(/<svg\b/i, '<svg onload="x()"'))),
+  P("R5", "a javascript: URL inside the served SVG", afterSvgTag('<a href="javascript:x()"><rect width="1" height="1"/></a>')),
+  P(["R5", "T1"], "a <foreignObject> inside the served SVG", afterSvgTag('<foreignObject width="8" height="8"><div xmlns="http://www.w3.org/1999/xhtml">x</div></foreignObject>')),
+  P("R5", "an off-origin <image> inside the served SVG (an origin links may point at)", afterSvgTag(`<image href="${PIN.listing}" width="8" height="8"/>`)),
   P("R6", "eth_sendRawTransaction in RPC_METHODS", inNet((s) => s.replace(/(RPC_METHODS\s*=\s*Object\.freeze\(\s*\[)/, (m) => `${m}\n  "eth_sendRawTransaction",`))),
   P("R6", "RPC_METHODS left unfrozen", inNet((s) => s.replace(/(RPC_METHODS\s*=\s*)Object\.freeze\(/, (m, a) => `${a}(`))),
   P("R6", "eth_sign named in a served file", inJs('const m = "eth_sign";')),
@@ -1545,6 +1707,7 @@ const PLANTS = [
   P("S2", "a README that drops the credit", (r) => edit(r, "README.md", (s) => s.replace(/tardis-relay/g, "someone"))),
   P("S3", "a page without the signed footer", (r) => edit(r, "docs/index.html", (s) => s.replace(/<footer\b[\s\S]*?<\/footer>/i, ""))),
   P("S4", "a MANIFEST.txt with a wrong hash", (r) => put(r, "docs/MANIFEST.txt", `${"0".repeat(64)}  index.html\n`)),
+  P("S5", "a vendored file with no VENDOR.lock line (S5 passes vacuously while docs/js/vendor/ is empty)", (r) => put(r, "docs/js/vendor/lib.js", "export const version = 1;\n")),
   P("S6", "a local path in a comment", inJs("// built in /home/someone/tick-and-tie")),
   P("S6", "an email address in the page", inBody("<!-- mail someone@example.com -->")),
   P("S7", "a citizen secret in the repo", (r) => put(r, "tools/notes.txt", `token ${["1f916", "_sk_"].join("")}${"Q".repeat(43)}\n`)),
@@ -1638,7 +1801,7 @@ const scriptInfo = () => {
   return { lines: me.toString("utf8").split("\n").length - 1, sha256: sha256(me) };
 };
 const limits = (n) =>
-  `LIMITS (read these): this reads files, not the live site; --deployed <url> compares the bytes GitHub serves. A static scan cannot see strings built at run time (a createElement(tag) with a computed tag, a method name assembled from parts); that is why net.js refuses at run time, R8 drives those refusals through a stub fetch, and test/smoke.mjs counts fields and requests in a real browser. It cannot prove the Base nodes answer honestly (that is the page's two-node rule) or that the registry serves every viewer the same documents. Do not trust this script either: it is ${n} lines, next to what it audits.`;
+  `LIMITS (read these): this reads files, not the live site; --deployed <url> compares the bytes GitHub serves. It can only read what a file spells out. A name assembled where it is used — createElement("in" + "put"), an event name joined from parts, a computed key on globalThis/window/self/navigator/document — is a finding now, and so is an alias of one of those objects; but a name handed along in a variable is still invisible here (T2 names the two places the page does that, both inside ui.js el()), and no rule here follows a value from one function to the next. The run-time side carries the rest: net.js refuses anything off its allowlists, R8 drives those refusals through a stub fetch, and test/smoke.mjs loads the page in headless Chromium — it walks every route shape the router has (the ten named views, one #/p/<handle> trail, one #/<k>/<sub> drawer), counts field-like elements in the live DOM with every <details> open, records every addEventListener call the page makes and allows only "click" and "hashchange", logs every request, and checks that localStorage, sessionStorage, IndexedDB and document.cookie are empty when the run ends. What smoke does NOT cover: one browser, one screen pair, one run, fixtures (or the live registry) answering that day — a route, a listener or a request that run never reached is not covered by anything here, and it says nothing about the bytes GitHub actually serves. Neither script can prove the Base nodes answer honestly (that is the page's two-node rule) or that the registry serves every viewer the same documents. Do not trust this script either: it is ${n} lines, next to what it audits.`;
 
 function selfTestLines(st, all) {
   const out = [];

@@ -203,14 +203,18 @@ export async function verifyCheckpoint(registryKeyX, log, cp) {
  * checkpoint over the same tree size. Returns each step, so the drawer can show which one failed.
  */
 export async function verifyEvent(registryKeyX, event, proofDoc) {
-  const steps = { rehash: false, same_leaf: false, inclusion: false, signature: false };
-  if (!event || !proofDoc?.event || !proofDoc?.checkpoint) return { ok: false, steps };
+  // A step is true (held), false (did not hold) or null (never attempted). Without the proof document three of the
+  // four were never tried, and the drawer has to show them as not read: a failed GET /api/proof is not the society's
+  // log breaking. The row's own rehash needs nothing but the event, so it is still attempted.
+  const steps = { rehash: null, same_leaf: null, inclusion: null, signature: null };
+  if (!event) return { ok: false, steps };
   steps.rehash = (await rowHash(event.prev_hash, eventFields(event))) === event.hash;
+  if (!proofDoc?.event || !proofDoc?.checkpoint) return { ok: false, steps };
   steps.same_leaf = proofDoc.event.hash === event.hash && proofDoc.event.id === event.id;
   const cp = proofDoc.checkpoint;
   steps.inclusion = await verifyInclusion(proofDoc.event.leaf_index, cp.tree_size, await leafHash(event.hash), proofDoc.proof ?? [], cp.root);
   steps.signature = await verifyCheckpoint(registryKeyX, "identity_events", cp);
-  return { ok: Object.values(steps).every(Boolean), steps };
+  return { ok: Object.values(steps).every((v) => v === true), steps };
 }
 
 /**
