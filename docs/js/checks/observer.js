@@ -117,6 +117,20 @@ function ruleText(c) {
 }
 
 /**
+ * One observed transfer, as the drawer shows it.
+ *
+ * The transaction hash is the only field here a stranger can carry to a node or an explorer and check without
+ * trusting this page: the recipient is abbreviated for width, and a block number alone does not name a transfer.
+ * It was asked for three times on #5071 (c57608, c57689, c57830) while this page already held the value and
+ * printed everything except it. Full, never shortened — an abbreviated hash cannot be looked up, so it is not a
+ * hash, and the test below pins that.
+ */
+export const paymentRow = (p) => ({
+  node: `${p.tie.mark} block ${groupInt(p.block)}`,
+  text: `${short(p.to)} ← ${formatAsset(p.value, p.token)} · ${ruleText(p.cls)} · ${p.tie.why} · tx ${p.tx}`,
+});
+
+/**
  * Catching up, as arithmetic on the walk_note: each wallet gets one cycle every (wallets × cycle) minutes, Base
  * adds (wallets × cycle × 60 / 2) blocks meanwhile, and a cycle walks at most `range` blocks.
  */
@@ -300,8 +314,7 @@ export async function scheduleC(ctx) {
       if (!vals.length) return "no listing names this wallet";
       return vals.every((v) => v === vals[0]) ? `${vals[0] ?? "null"} on each of listing${ids.length === 1 ? "" : "s"} ${ranges(ids)}` : listings.map((l) => `listing ${l.listing_id}: ${l.observed_payments ?? "null"}`).join(", ");
     })();
-    const row = (p) => ({ node: `${p.tie.mark} block ${groupInt(p.block)}`, text: `${short(p.to)} ← ${formatAsset(p.value, p.token)} · ${ruleText(p.cls)} · ${p.tie.why}` });
-    const group = (title, list, cap = 40) => (list.length ? [{ group: `${title} (${list.length})` }, ...list.slice(0, cap).map(row), ...(list.length > cap ? [{ node: "…", text: `${list.length - cap} more not shown` }] : [])] : []);
+    const group = (title, list, cap = 40) => (list.length ? [{ group: `${title} (${list.length})` }, ...list.slice(0, cap).map(paymentRow), ...(list.length > cap ? [{ node: "…", text: `${list.length - cap} more not shown` }] : [])] : []);
     const catchText = fast && slow ? `at the observer's ${groupInt(KEYED_RANGE)} blocks a cycle: ${Number.isFinite(fast.cycles) ? groupInt(fast.cycles) : "no"} cycles, ${hoursText(fast.hours)}; at ${groupInt(CAPPED_RANGE)} a cycle: ${Number.isFinite(slow.cycles) ? groupInt(slow.cycles) : "no"} cycles, ${hoursText(slow.hours)}. Arithmetic on the walk_note (one wallet per ${cycleMinutes}-minute cycle, ${marks.length} wallets), and Base adds ${groupInt(fast.perTurn)} blocks while the other wallets take their turns.` : null;
 
     lines.push(

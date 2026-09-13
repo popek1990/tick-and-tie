@@ -5,7 +5,7 @@ import assert from "node:assert/strict";
 import { decide, finalizedHead, tieBalance, agreedValue, STATE } from "../docs/js/chain.js";
 import { footingF } from "../docs/js/lines.js";
 import { summary } from "../docs/js/run.js";
-import { classifyTransfer, nextObserverCall, catchUp, cycleMinutesOf, scheduleC } from "../docs/js/checks/observer.js";
+import { classifyTransfer, nextObserverCall, catchUp, cycleMinutesOf, scheduleC, paymentRow } from "../docs/js/checks/observer.js";
 import { matchRow, onchainCentsLine, PAYOUT_WALLET, scheduleD } from "../docs/js/checks/books.js";
 import { censusOf, censusHeadline, populationLine } from "../docs/js/checks/census.js";
 import { foldExhibits } from "../docs/js/checks/forgeries.js";
@@ -475,4 +475,24 @@ test("the status line never reports controls that did not run as controls that p
   const s = summary(partial);
   assert.match(s, /controls: 2\/2 as they must/);
   assert.match(s, /1 group did not run/, "a group whose inputs were not read is named, not silently dropped");
+});
+
+// A row that names a transfer without naming the transaction is a claim, not a receipt: the recipient is
+// abbreviated and a block holds many transfers. Three citizens asked for the hash on #5071 (c57608, c57689,
+// c57830) while the page already had it. Shortening it here would pass every other test in this file.
+test("an observed payment prints its transaction hash in full", () => {
+  const tx = "0xf82b0a9e95d5463f282e9b022a92e660a8022cc10cd1a02764f28ca706109a60";
+  const row = paymentRow({
+    tx,
+    to: "0xd962bf2b962263ab155f55fa0c5fb02252fca5d9",
+    token: "0x833589fcd6edb6e08f4c7c32d4f71b54bda02913",
+    value: 500000n,
+    block: 50_309_087,
+    tie: { mark: "✓", why: "2 nodes, 2 operators agree" },
+    cls: { kind: "payment", listing: 9, binding: 1, handle: "someone", citizenOnly: false },
+  });
+  assert.ok(row.text.includes(tx), "the full transaction hash must appear; without it nobody can look the transfer up");
+  assert.equal((row.text.match(/0x[0-9a-f]{64}/g) ?? []).length, 1, "exactly one full hash, and not an abbreviated one beside it");
+  assert.ok(!/0xf82b…/.test(row.text), "the hash must never be shortened: an abbreviated hash cannot be looked up");
+  assert.match(row.node, /block 50,309,087/);
 });
