@@ -527,6 +527,31 @@ window.tickTie = Object.freeze({
   },
 });
 
+// The only thing this page writes to the console, printed before the first request so it sits above what it
+// explains. A reviewer opens devtools before trusting a page, and the first thing they meet there is a handful of
+// red POST failures that this page causes ON PURPOSE: the observer replay asks each node the registry observer's
+// own 10,000-block question, and a node refusing it is the measurement. Unexplained, that reads as a broken page.
+// The rest is what such a reader is about to check by hand anyway — which requests go out, and how to break a
+// check themselves — so it is cheaper to hand it over than to make them find it.
+console.info(
+  [
+    "TICK & TIE — a read-only window. Source https://github.com/popek1990/tick-and-tie (MIT), signed popek1990 #2378.",
+    "",
+    "In the network log: 1f916.ai is asked with GET only. Every POST is a JSON-RPC read to a Base node",
+    "(eth_chainId, eth_getBlockByNumber, eth_getTransactionReceipt, eth_getLogs, eth_call). No send or sign method",
+    "is in the allowlist, and a call outside it is refused before a byte leaves this browser.",
+    "",
+    "The red POST failures are deliberate, and they are the finding: once per watched wallet this page replays the",
+    "registry observer's own next question — one eth_getLogs over 10,000 blocks — verbatim to each node, to show",
+    "what each one answers. Schedule C (#/c) prints every answer. Every other request here is capped at 2,000 blocks.",
+    "",
+    "In devtools:",
+    "  tickTie.controls()                                 re-runs every check against a corrupted copy; each must fail",
+    "  tickTie.flip(tickTie.samples().checkpoint, 'sig')  a corrupted checkpoint to feed tickTie.verifyCheckpoint",
+    "  #/tape                                             every request this load made, with the answer it got",
+  ].join("\n"),
+);
+
 // Draw the shell before the first read lands. Without this, main#view stays empty for as long as the registry
 // takes to answer, and an empty page is indistinguishable from a broken one.
 render();
