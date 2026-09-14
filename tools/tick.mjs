@@ -50,6 +50,15 @@ if (json) {
     census: results.census?.summary ?? null,
     schedules: Object.fromEntries(ORDER.map(([k]) => [k, (results[k] ?? []).map(plainLine)])),
     controls: results.controls,
+    // Which control groups did NOT run, and why. The text output has printed this since the start and the page
+    // shows it in the header, but --json carried it only inside the `summary` prose, so anything reading the
+    // JSON as data saw eleven controls, eleven passes and an empty `problems` with no field to tell it that
+    // three more never ran. Fourteen are declared; a read that throttles GET /api/checkpoint/consistency runs
+    // eleven. "0 of 0 is a skipped self-test, and must never read as a passed one" (run.js) has to hold for a
+    // machine reading this file too, not only for a person reading the page.
+    // No declared total is written here on purpose: a hardcoded count is the bug this field exists to close, and
+    // it would go stale the first time a control is added. Each skip names its own group size instead.
+    controls_skipped: results.controlsSkipped ?? [],
     problems,
   };
   process.stdout.write(JSON.stringify(out, (k, v) => (typeof v === "bigint" ? v.toString() : v), 2) + "\n");
