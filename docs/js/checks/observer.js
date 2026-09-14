@@ -21,7 +21,7 @@ import { parseAtomic, formatAsset, lc, short, fromMs, isoMin, groupInt, plural, 
 import { line } from "../lines.js";
 
 const OBSERVED_TOKENS = [USDC, TOKEN];
-const KEYED_RANGE = 10_000; // src/observer.ts OBSERVER_BLOCKS_PER_CYCLE_KEYED; the live marks span exactly this
+const KEYED_RANGE = 10_000; // src/observer.ts OBSERVER_BLOCKS_PER_CYCLE_KEYED: the stride a cycle ASKS for, not one it is observed to walk
 const CAPPED_RANGE = 2_000; // what mainnet.base.org accepts today (-32614 "limited to a 2,000 range")
 const START_MARGIN = 20_000; // src/observer.ts OBSERVER_START_MARGIN_BLOCKS
 export const BLOCK_SECONDS = 2; // Base targets 2 s a block; every blocks→time figure on the page is an estimate from it
@@ -140,6 +140,22 @@ export function catchUp(gap, wallets, cycleMinutes, range) {
   if (range <= perTurn) return { cycles: Infinity, hours: Infinity, perTurn };
   const cycles = Math.ceil(gap / (range - perTurn));
   return { cycles, hours: (cycles * wallets * cycleMinutes) / 60, perTurn };
+}
+
+/**
+ * What a cycle actually banked, read off the mark itself: last_range_from..last_range_to inclusive. This is not
+ * the stride it asked for. Since the paging change landed in src/observer.ts (OBSERVER_BLOCKS_PER_PAGE), a page
+ * that no second operator seconds ends the cycle where it stands, so a 10,000-block stride can bank far less —
+ * on 2026-09-14 the eight live spans measured 1,000 to 8,000, every one of them cut short by the same
+ * "rpc unavailable (HTTP 429)". A catch-up figure quoted only from the design stride is therefore optimistic by
+ * whatever the rate limit took, and at 1,000 blocks a cycle a wallet does not converge at all. That is why the
+ * measured span is quoted beside the two design bounds rather than instead of them: the design figure is what
+ * the registry intends, this is what it is managing.
+ */
+export function achievedStride(mark) {
+  const from = mark?.last_range_from;
+  const to = mark?.last_range_to;
+  return Number.isInteger(from) && Number.isInteger(to) && to >= from ? to - from + 1 : null;
 }
 
 const WORDS = { one: 1, two: 2, three: 3, four: 4, five: 5, six: 6, ten: 10, fifteen: 15, twenty: 20, thirty: 30 };
@@ -279,6 +295,8 @@ export async function scheduleC(ctx) {
     ctx.observerPayments.push(...unseen.map((p) => ({ tx: p.tx, logIndex: p.logIndex, to: p.to, token: p.token, value: p.value, block: p.block, handle: p.cls.handle, listing: p.cls.listing, funder: wallet })));
     const fast = catchUp(gap, marks.length, cycleMinutes, KEYED_RANGE);
     const slow = catchUp(gap, marks.length, cycleMinutes, CAPPED_RANGE);
+    const banked = achievedStride(mark);
+    const measured = banked ? catchUp(gap, marks.length, cycleMinutes, banked) : null;
     // railTotal and expectedTotal travel with the wallet so "Today" can state the healed case as a number the
     // reader can check, rather than as the absence of a complaint: what the rail counts before this mark, against
     // what this page finds before it.
@@ -315,7 +333,11 @@ export async function scheduleC(ctx) {
       return vals.every((v) => v === vals[0]) ? `${vals[0] ?? "null"} on each of listing${ids.length === 1 ? "" : "s"} ${ranges(ids)}` : listings.map((l) => `listing ${l.listing_id}: ${l.observed_payments ?? "null"}`).join(", ");
     })();
     const group = (title, list, cap = 40) => (list.length ? [{ group: `${title} (${list.length})` }, ...list.slice(0, cap).map(paymentRow), ...(list.length > cap ? [{ node: "…", text: `${list.length - cap} more not shown` }] : [])] : []);
-    const catchText = fast && slow ? `at the observer's ${groupInt(KEYED_RANGE)} blocks a cycle: ${Number.isFinite(fast.cycles) ? groupInt(fast.cycles) : "no"} cycles, ${hoursText(fast.hours)}; at ${groupInt(CAPPED_RANGE)} a cycle: ${Number.isFinite(slow.cycles) ? groupInt(slow.cycles) : "no"} cycles, ${hoursText(slow.hours)}. Arithmetic on the walk_note (one wallet per ${cycleMinutes}-minute cycle, ${marks.length} wallets), and Base adds ${groupInt(fast.perTurn)} blocks while the other wallets take their turns.` : null;
+    const measuredText =
+      measured && banked
+        ? ` Measured, not assumed: this wallet's own last cycle banked ${groupInt(banked)} blocks (last_range_from–last_range_to), and at that rate ${Number.isFinite(measured.cycles) ? `${groupInt(measured.cycles)} cycles, ${hoursText(measured.hours)}` : "it never closes — the cycle banks less than the chain grows while the other wallets take their turns"}.`
+        : "";
+    const catchText = fast && slow ? `at the observer's ${groupInt(KEYED_RANGE)} blocks a cycle: ${Number.isFinite(fast.cycles) ? groupInt(fast.cycles) : "no"} cycles, ${hoursText(fast.hours)}; at ${groupInt(CAPPED_RANGE)} a cycle: ${Number.isFinite(slow.cycles) ? groupInt(slow.cycles) : "no"} cycles, ${hoursText(slow.hours)}. Arithmetic on the walk_note (one wallet per ${cycleMinutes}-minute cycle, ${marks.length} wallets), and Base adds ${groupInt(fast.perTurn)} blocks while the other wallets take their turns.${measuredText}` : null;
 
     lines.push(
       line({

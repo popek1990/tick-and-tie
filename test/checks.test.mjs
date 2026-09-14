@@ -5,7 +5,7 @@ import assert from "node:assert/strict";
 import { decide, finalizedHead, tieBalance, agreedValue, STATE } from "../docs/js/chain.js";
 import { footingF } from "../docs/js/lines.js";
 import { summary } from "../docs/js/run.js";
-import { classifyTransfer, nextObserverCall, catchUp, cycleMinutesOf, scheduleC, paymentRow } from "../docs/js/checks/observer.js";
+import { classifyTransfer, nextObserverCall, catchUp, cycleMinutesOf, achievedStride, scheduleC, paymentRow } from "../docs/js/checks/observer.js";
 import { matchRow, onchainCentsLine, PAYOUT_WALLET, scheduleD } from "../docs/js/checks/books.js";
 import { censusOf, censusHeadline, populationLine } from "../docs/js/checks/census.js";
 import { foldExhibits } from "../docs/js/checks/forgeries.js";
@@ -92,6 +92,23 @@ test("catching up: arithmetic on the walk_note, with the chain growing meanwhile
   assert.equal(catchUp(940_000, 4, 5, 500).cycles, Infinity, "a range below the chain's growth never catches up");
   assert.equal(catchUp(0, 4, 5, 10_000), null);
   assert.equal(ranges([18, 9, 11, 14, 15, 16, 17, 24, 25]), "9, 11, 14–18, 24, 25");
+});
+
+test("achieved stride: what a cycle banked, not what it asked for", () => {
+  // The four real shapes from GET /api/rail on 2026-09-14, where a 10,000-block stride banked 1,000 to 8,000
+  // because a page nobody seconded ended the cycle where it stood.
+  assert.equal(achievedStride({ last_range_from: 51_260_715, last_range_to: 51_264_714 }), 4_000);
+  assert.equal(achievedStride({ last_range_from: 50_286_900, last_range_to: 50_287_899 }), 1_000);
+  // A wallet that has never been walked carries nulls, and a half-written mark must not become a stride of NaN.
+  assert.equal(achievedStride({ last_range_from: null, last_range_to: null }), null);
+  assert.equal(achievedStride({ last_range_from: 10, last_range_to: null }), null);
+  assert.equal(achievedStride({}), null);
+  assert.equal(achievedStride(null), null);
+  assert.equal(achievedStride({ last_range_from: 10, last_range_to: 9 }), null, "a backwards range is not a stride");
+  // The point of measuring it: at eight wallets the chain grows 1,200 blocks a turn, so a 1,000-block cycle
+  // loses ground while its own mark still moves forward. The design stride would have said 3.2 days.
+  assert.equal(catchUp(1_011_249, 8, 5, 1_000).cycles, Infinity, "a banked stride under 1,200 never closes at 8 wallets");
+  assert.ok(Number.isFinite(catchUp(1_011_249, 8, 5, 10_000).cycles), "the design stride alone would say it closes");
 });
 
 test("the census counts citizens, each from one source", () => {
