@@ -100,9 +100,13 @@ export async function witnessLine(ctx) {
   });
 }
 
-/** "binding=150, docket=listing-20, receipt payload sha256=945a…, base tx=0xc2ca…:429" → fields, or null. */
+/**
+ * "binding=150, docket=listing-20, receipt payload sha256=945a…, base tx=0xc2ca…:429" → fields, or null. A
+ * verifier's payout carries the docket `listing-N-verifier` (binding 281, event 13010, 2026-09-13), and it is a
+ * receipt like any other: refusing that suffix made the page print "did not parse" for a payment the rail counts.
+ */
 export function parseReceiptDetail(detail) {
-  const m = /^binding=(\d+), docket=(listing-\d+), receipt payload sha256=([0-9a-f]{64}), base tx=(0x[0-9a-f]{64}):(\d+)$/.exec(String(detail));
+  const m = /^binding=(\d+), docket=(listing-\d+(?:-verifier)?), receipt payload sha256=([0-9a-f]{64}), base tx=(0x[0-9a-f]{64}):(\d+)$/.exec(String(detail));
   if (!m) return null;
   return { binding: Number(m[1]), docket: m[2], payloadHash: m[3], tx: m[4], logIndex: Number(m[5]) };
 }

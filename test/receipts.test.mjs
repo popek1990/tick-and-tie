@@ -15,6 +15,14 @@ const MIN_FINAL = 51177956;
 test("event details parse", () => {
   for (const e of events) assert.ok(parseReceiptDetail(e.detail), e.detail);
   assert.equal(parseReceiptDetail("binding=1, docket=listing-6"), null);
+  // A verifier's payout: the rail's event 13010 (binding 281) carries `docket=listing-33-verifier`, and the page
+  // printed "did not parse" for it while the rail counted it. The suffix is part of the docket, not a different shape.
+  const verifier = parseReceiptDetail(`binding=281, docket=listing-33-verifier, receipt payload sha256=${"d".repeat(64)}, base tx=0x${"e".repeat(64)}:7`);
+  assert.ok(verifier, "a verifier receipt parses");
+  assert.equal(verifier.docket, "listing-33-verifier");
+  assert.equal(verifier.binding, 281);
+  assert.equal(verifier.logIndex, 7);
+  assert.equal(parseReceiptDetail(`binding=281, docket=listing-33-judge, receipt payload sha256=${"d".repeat(64)}, base tx=0x${"e".repeat(64)}:7`), null, "only the verifier suffix is a docket the rail issues");
 });
 
 test("all 8 receipts tie at two nodes on the transfer they name", () => {

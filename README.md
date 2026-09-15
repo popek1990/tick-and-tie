@@ -35,11 +35,15 @@ band because a reader should not have to know what "A-log" means to find it.
 
 Then **Today on the rail**: at most three items, picked by rule, each something the registry can act on.
 
-1. **The observer, diagnosed.** The registry's payment observer (`src/observer.ts`) asks for 10,000 blocks of logs
-   per cycle. The page puts that exact next question to each public provider in the observer's own order, prints
-   each answer verbatim, then asks the same question over 1,000 blocks. It says why, from the source
-   (mainnet.base.org now caps `eth_getLogs` at 2,000 blocks), how long catching up takes as arithmetic on the rail's
-   own `walk_note`, and how many payments Base shows that the rail cannot count yet.
+1. **The observer, diagnosed.** The registry's payment observer (`src/observer.ts`) walks 10,000 blocks of logs
+   per cycle. Until 2026-09-14 it asked that as one `eth_getLogs`; no public provider answers that width
+   (mainnet.base.org caps it at 2,000), so nothing could second the keyed voice and every mark fell behind reading
+   "no two providers agreed (1 answered)". It now asks the same span as pages of 1,000 (the rail's `walk_note`),
+   two providers agreeing on every page. While any mark is more than a day behind, the page puts both questions
+   to the public providers — the 1,000-block page it asks now, and the whole-cycle question that put the marks
+   behind — prints each answer verbatim, says why from the source, gives catch-up as arithmetic on the `walk_note`
+   at the full stride and at the stride the wallet's own last cycle banked, and says how many payments Base shows
+   that the rail cannot count yet.
    The explanation does not depend on what your network is told. A reader behind a throttle gets HTTP 429 from
    mainnet.base.org before they get its cap in words — the same limit the maintainer traced to Workers' egress
    (c1574) — so `RECORDED` in `docs/js/checks/today.js` carries the same question asked from an ordinary host on
@@ -129,7 +133,8 @@ methods and no others:
 
 `eth_call` may target only USDC, 1F916 and WETH, with a read selector (`balanceOf`, `decimals`, `symbol`,
 `totalSupply`), each derived from its signature with the page's own keccak-256. `eth_getLogs` spans at most
-2,000 blocks; the observer replay is the one documented exception (10,000 blocks, the observer's own width).
+2,000 blocks; the observer replay is the one documented exception (10,000 blocks, the width the observer asked
+until it paged).
 
 Moving money needs a signature. This page holds no key, never asks for one, never touches a wallet object, and
 refuses any call outside the list above inside `docs/js/net.js` before a byte leaves the browser.
@@ -194,7 +199,7 @@ await tickTie.verifyCheckpoint(s.registryKey, s.checkpoint.log, tickTie.flip(s.c
 await tickTie.controls();                                                                               // every control, re-run
 ```
 
-`npm test` runs 61 tests offline: keccak known answers, the 11 sealed treasury rows folding to the signed ledger
+`npm test` runs the offline suite (`node --test` prints the count): keccak known answers, the 11 sealed treasury rows folding to the signed ledger
 root, event inclusion and consistency proofs from real checkpoints, all 8 receipts tying on recorded node answers
 with their negative controls, the observer's rule case by case, the census counts, and the request pacing. A dozen
 of them exist to stop one particular kind of lie: that a read which did not happen is printed as a fact. A receipt
@@ -212,8 +217,9 @@ each page of the citizen list) go one at a time, 3.5 seconds apart with one retr
 refuses bursts of them. So a day with more awards due is a slower, heavier read. Those expensive paths use two
 queues, not one: a listing or binding record on one, the citizen list on the other, so the population line at the
 top of the page does not wait behind the detail reads. About 32 to 38 JSON-RPC reads go to
-Base nodes, paced per node with a budget and a circuit breaker; about 10 GETs go to Blockscout and one or two to
-GitHub (the witness day file). Timings, 2026-09-12: the first item of Today lands at about two seconds and the
+Base nodes, paced per node with a budget and a circuit breaker; Blockscout is read in pages, up to three per
+wallet the observer schedule walks and three for the treasury, from a budget of 20 (`docs/js/net.js`); one or two
+GETs go to GitHub (the witness day file). Timings, 2026-09-12: the first item of Today lands at about two seconds and the
 population line at about five, on a run where a page of the citizen list was refused and retried eleven seconds
 later. The whole reading finished between 11.8 and 18.5 seconds across runs that day, and the spread is the
 registry's throttle rather than the page: a run with no refusal spends 24 GETs, a run with one spends 25. Before

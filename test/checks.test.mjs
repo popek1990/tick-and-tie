@@ -440,6 +440,11 @@ test("the observer diagnosis survives a reader who was throttled instead of capp
     assert.match(text, /no two providers agreed/, `${name}: the mark's own words are explained`);
     assert.match(text, /pages of 1,000/, `${name}: the way out is stated`);
     assert.match(text, /not read/, `${name}: what is still unread is named`);
+    // The walker has paged since 2026-09-14 (the rail's walk_note). The old causal sentence — "at 10,000 blocks
+    // the keyed voice has no second voice", present tense — outlived the thing it explained; history is history.
+    assert.match(text, /until 2026-09-14/, `${name}: the whole-cycle question is dated as history`);
+    assert.match(text, /two providers agreeing on every page/, `${name}: what the walker does now is the walk_note's sentence`);
+    assert.doesNotMatch(text, /has no second voice/, `${name}: the present-tense deadlock is gone`);
   }
   // A recording is offered only when the reader did not get the cap, and is always labelled as a record.
   assert.doesNotMatch(capped, /recorded from an ordinary host/, "no fallback when the live answer already says it");
@@ -452,6 +457,53 @@ test("the observer diagnosis survives a reader who was throttled instead of capp
   // The drpc correction: its refusal is not evidence about this width, and the page must not imply it is.
   assert.match(capped, /refuses 500, 1,000, 2,000, 5,000 and 10,000 with that same sentence/);
   assert.equal(Object.isFrozen(RECORDED), true, "a record the page cannot edit at runtime");
+});
+
+test("the behind observer item quotes the page the walker asks now, and the stride its last cycle banked", async () => {
+  // This branch never ran in a test or in the fixture smoke (no /api/rail fixture), and run.js wraps observerItem
+  // in a try/catch: a runtime error in its template would have removed Today's first item silently, not broken
+  // the page. So it is exercised here with every node refusing, which is also the reader-behind-a-throttle case.
+  const head = 51_345_383; // the agreed finalized head banked on 2026-09-15T14:09Z
+  const marks = [
+    { funder_address: "0x" + "a".repeat(40), last_block: head - 1_005_251, last_range_from: head - 1_008_251, last_range_to: head - 1_005_252, last_error: "no two providers agreed over 1000 blocks (2 answered): Error" },
+    { funder_address: "0x" + "b".repeat(40), last_block: head - 895_484, last_range_from: head - 905_484, last_range_to: head - 895_485, last_error: null },
+    ...Array.from({ length: 6 }, (_, i) => ({ funder_address: "0x" + String(i + 1).repeat(40), last_block: head - 400 - i, last_range_from: head - 1_600, last_range_to: head - 400, last_error: i === 0 ? "rpc unavailable (HTTP 429)" : null })),
+  ];
+  const walk_note = "One funder wallet per five-minute cycle, at most 10,000 Base blocks per cycle, asked as pages of at most 1,000 blocks";
+  const ctx = { docs: { rail: { observer: { marks, walk_note }, listings: [] } }, finalHead: head, readAt: "test" };
+  const saved = globalThis.fetch;
+  globalThis.fetch = async () => new Response("upstream unavailable", { status: 503 });
+  let it;
+  try {
+    it = await observerItem(ctx);
+  } finally {
+    globalThis.fetch = saved;
+  }
+  assert.ok(it, "a behind observer produces the item");
+  assert.equal(it.healed, undefined);
+  assert.match(it.head, /is behind\. It watches 8 wallets: 2 are ≈21 to 23 days behind finality, and 6 are current/);
+  const body = it.body.join(" ");
+  assert.match(body, /Its next page \(eth_getLogs over 1,000 blocks/, "the question it asks now comes first");
+  assert.match(body, /the shape it asked before paging, one eth_getLogs over 10,000 blocks/, "the whole-cycle question is labelled history");
+  assert.doesNotMatch(body, /Its next question \(eth_getLogs over 10,000/, "the old present-tense line is gone");
+  assert.match(body, /two providers agreeing on every page/);
+  assert.match(body, /recorded from an ordinary host on 2026-09-12T15:00Z/, "every node refused, so the record is offered, labelled");
+  assert.match(body, /1 of the marks end their last_error with HTTP 429/);
+  // Catch-up: the furthest mark (wallet a, 1,005,251 back) banked 3,000 blocks; at eight wallets a turn costs
+  // 150 × 8 = 1,200 blocks, so 3,000 a cycle closes and the figure is finite, while the full stride is faster.
+  assert.match(body, /Catching up the furthest mark \(1,005,251 blocks\)/);
+  assert.match(body, /at the full 10,000 blocks a cycle; at the 3,000 blocks its own last cycle banked, ≈/);
+  assert.doesNotMatch(body, /(hours|days) at 2,000/, "no catch-up figure at a stride the walker does not ask for");
+  // A wallet whose last cycle banked less than the chain grows in a turn never closes, and the item says so.
+  marks[0].last_range_to = marks[0].last_range_from + 999;
+  globalThis.fetch = async () => new Response("upstream unavailable", { status: 503 });
+  let again;
+  try {
+    again = await observerItem(ctx);
+  } finally {
+    globalThis.fetch = saved;
+  }
+  assert.match(again.body.join(" "), /at the 1,000 blocks its own last cycle banked, it never closes/);
 });
 
 test("F's bar counts clocks and not-read lines apart, in one place for page and terminal", () => {

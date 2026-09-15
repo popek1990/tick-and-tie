@@ -8,7 +8,7 @@
 // Each item is built as soon as its own inputs land (the first in about five seconds); the observer item gains
 // schedule C's count when C finishes.
 
-import { replay, KEYED_RANGE, CAPPED_RANGE, catchUp, cycleMinutesOf, hoursText, BLOCK_SECONDS } from "./observer.js";
+import { replay, KEYED_RANGE, catchUp, achievedStride, cycleMinutesOf, hoursText, BLOCK_SECONDS } from "./observer.js";
 import { groupInt, short, plural } from "../codec.js";
 import { STATE } from "../chain.js";
 
@@ -40,12 +40,16 @@ export const RECORDED = Object.freeze({
 });
 
 /**
- * Why the observer cannot get two voices, in words that hold whatever this browser was told. `liveBase` is
- * mainnet.base.org's live answer, or null when it was not reached. Pure, so the reader can call it.
+ * Why the marks fell behind, and what the walker does now, in words that hold whatever this browser was told.
+ * `liveBase` is mainnet.base.org's live answer to the whole-cycle question, or null when it was not reached.
+ * Pure, so the reader can call it. The first sentence is history and says so: the walker asked its whole
+ * cycle as one request until 2026-09-14, and the marks it left behind are the ones Today counts. The second is
+ * the rail's own walk_note in this page's words, so the explanation cannot outlive the thing it explains again.
  */
 export function observerWhy(liveBase) {
   const out = [
-    "Why, from the source: src/observer.ts asks 10,000 blocks a cycle when a keyed endpoint is set (OBSERVER_BLOCKS_PER_CYCLE_KEYED); its comment says Infura and mainnet.base.org both took that width when measured on 2026-09-08. mainnet.base.org caps eth_getLogs at 2,000 today (uriel met the same cap on 2026-09-10, #4689), so at 10,000 blocks the keyed voice has no second voice. That is what “no two providers agreed (1 answered)” on each mark says.",
+    "Why it fell behind, from the source: until 2026-09-14 src/observer.ts asked its whole 10,000-block cycle (OBSERVER_BLOCKS_PER_CYCLE_KEYED) as one eth_getLogs when a keyed endpoint was set; its comment said Infura and mainnet.base.org both took that width when measured on 2026-09-08. mainnet.base.org caps eth_getLogs at 2,000 today (uriel met the same cap on 2026-09-10, #4689), so at 10,000 blocks the keyed voice had no second voice, and every mark this page read then said “no two providers agreed (1 answered)” (recorded in c56583 and c58653).",
+    "What it does now, in the rail's own walk_note: the same 10,000 blocks a cycle, asked as pages of 1,000, two providers agreeing on every page. A page nobody seconds ends the cycle where it stands, and last_error names why the last cycle stopped short of a full stride — so a mark can still read “(1 answered)” or “(2 answered)” today, over one page rather than the whole cycle. The marks behind are the ones that fell back while the whole cycle was one question; schedule C quotes each one's own last stride.",
   ];
   const namesTheCap = /-32614|2,000 range/.test(String(liveBase ?? ""));
   if (!namesTheCap) {
@@ -64,7 +68,7 @@ export function observerWhy(liveBase) {
       Object.entries(RECORDED.caps)
         .map(([n, s]) => `${n} ${s}`)
         .join("; ") +
-      ". Asked in pages of 1,000 instead of one question of 10,000, all three of mainnet.base.org, publicnode and tenderly can answer, so two operators could agree again without anyone paying for a node."
+      ". Asked in pages of 1,000, all three of mainnet.base.org, publicnode and tenderly can answer, which is why two operators can agree again on every page without anyone paying for a node."
   );
   out.push(RECORDED.keyed);
   return out;
@@ -122,19 +126,28 @@ export async function observerItem(ctx) {
     return item;
   }
   item.route = `#/c/${m.funder_address.toLowerCase()}`;
-  const r = await replay(m, ctx.finalHead); // the most recent mark: its next call is the one the observer is making now
+  const r = await replay(m, ctx.finalHead); // the most recent mark behind: its next page, and the whole-cycle question that put it there
   item.replay = r;
-  item.body.push(`Its next question (eth_getLogs over ${groupInt(KEYED_RANGE)} blocks from ${short(m.funder_address)}), put just now to its own public providers, in its order:`);
+  item.body.push(`Its next page (eth_getLogs over 1,000 blocks from ${short(m.funder_address)}), put just now to two of its public providers: ${Object.entries(r.narrow).map(([n, s]) => `${n} ${s}`).join("; ")}.`);
+  item.body.push(`The same span asked the shape it asked before paging, one eth_getLogs over ${groupInt(KEYED_RANGE)} blocks, put to each of its public providers in its order — the question that put these marks behind:`);
   for (const [node, s] of Object.entries(r.wide)) item.body.push(`${node}: ${s}`);
-  item.body.push(`${r.wideAnswered} of ${Object.keys(r.wide).length} answer at that width, and the observer needs two to agree. Over 1,000 blocks: ${Object.entries(r.narrow).map(([n, s]) => `${n} ${s}`).join("; ")}.`);
+  item.body.push(`${r.wideAnswered} of ${Object.keys(r.wide).length} answer at that width, and the observer needs two to agree.`);
   for (const l of observerWhy(r.wide.base)) item.body.push(l);
   const throttled = marks.filter((x) => /HTTP 429/.test(String(x.last_error ?? ""))).length;
   if (throttled) item.body.push(`${throttled} of the marks end their last_error with HTTP 429, the limit the maintainer traced to Cloudflare Workers' egress at mainnet.base.org on 2026-08-07 (c1574). last_error keeps only the last provider's message, and this browser does not share that egress.`);
   const cycle = cycleMinutesOf(ctx.docs.rail?.observer?.walk_note);
-  const worst = Math.max(...behind.map((x) => ctx.finalHead - x.last_block));
+  const furthest = behind[behind.length - 1]; // sorted by last_block descending, so the last one is furthest back
+  const worst = ctx.finalHead - furthest.last_block;
   const fast = catchUp(worst, marks.length, cycle, KEYED_RANGE);
-  const slow = catchUp(worst, marks.length, cycle, CAPPED_RANGE);
-  if (fast && slow) item.body.push(`Catching up the furthest mark (${groupInt(worst)} blocks), as arithmetic on the rail's walk_note (one wallet per ${cycle}-minute cycle, ${marks.length} wallets): ${hoursText(fast.hours)} at ${groupInt(KEYED_RANGE)} blocks a cycle, ${hoursText(slow.hours)} at ${groupInt(CAPPED_RANGE)}.`);
+  // The stride the furthest mark's own last cycle banked, read off the mark: what the walker is managing, not what
+  // it asks for. Quoted beside the design figure, never instead of it, and "never closes" when it cannot outrun
+  // the chain — the same two sentences schedule C prints per wallet.
+  const banked = achievedStride(furthest);
+  const measured = banked ? catchUp(worst, marks.length, cycle, banked) : null;
+  if (fast) {
+    const atBanked = measured ? `; at the ${groupInt(banked)} blocks its own last cycle banked, ${Number.isFinite(measured.cycles) ? hoursText(measured.hours) : "it never closes — the cycle banks less than the chain grows while the other wallets take their turns"}` : "";
+    item.body.push(`Catching up the furthest mark (${groupInt(worst)} blocks), as arithmetic on the rail's walk_note (one wallet per ${cycle}-minute cycle, ${marks.length} wallets): ${hoursText(fast.hours)} at the full ${groupInt(KEYED_RANGE)} blocks a cycle${atBanked}.`);
+  }
   return item;
 }
 

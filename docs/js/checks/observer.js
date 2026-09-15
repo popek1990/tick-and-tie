@@ -22,7 +22,6 @@ import { line } from "../lines.js";
 
 const OBSERVED_TOKENS = [USDC, TOKEN];
 const KEYED_RANGE = 10_000; // src/observer.ts OBSERVER_BLOCKS_PER_CYCLE_KEYED: the stride a cycle ASKS for, not one it is observed to walk
-const CAPPED_RANGE = 2_000; // what mainnet.base.org accepts today (-32614 "limited to a 2,000 range")
 const START_MARGIN = 20_000; // src/observer.ts OBSERVER_START_MARGIN_BLOCKS
 export const BLOCK_SECONDS = 2; // Base targets 2 s a block; every blocks→time figure on the page is an estimate from it
 const DAY_BLOCKS = 43_200;
@@ -40,7 +39,12 @@ export function blockAt(time, head) {
   return head.number - Math.round((head.time.getTime() - time.getTime()) / (BLOCK_SECONDS * 1000));
 }
 
-/** The observer's next eth_getLogs call for one mark, exactly as src/observer.ts builds it. */
+/**
+ * The span of one mark's next cycle as src/observer.ts bounds it: last_block + 1 to last_block + 10,000, capped at
+ * finalized. While the walker asked its whole cycle at once this was its one request; it now asks the same span as
+ * pages of 1,000 (the rail's walk_note), so what is built here is the cycle's span, not a request it still makes.
+ * The replay puts it to the public providers as history: the question that put the marks behind.
+ */
 export function nextObserverCall(mark, finalized) {
   const from = mark.last_block + 1;
   const to = Math.min(finalized, from + KEYED_RANGE - 1);
@@ -67,8 +71,9 @@ function summarizeAnswer(a) {
 export const REPLAY_NODES = Object.freeze(["base", "tenderly", "drpc", "publicnode"]);
 
 /**
- * The diagnosis. Asks each public provider the observer's own question (10,000 blocks), then the same question
- * over 1,000 blocks at the two that accept that width. Verbatim answers, dated, no interpretation beyond counting.
+ * The diagnosis. Asks each public provider the whole-cycle question the walker asked before it paged (10,000
+ * blocks), then the 1,000-block page it asks now at the two that take that width. Verbatim answers, dated, no
+ * interpretation beyond counting.
  */
 export async function replay(mark, finalized) {
   const call = nextObserverCall(mark, finalized);
@@ -294,13 +299,12 @@ export async function scheduleC(ctx) {
     const who = [...new Set(unseen.map((p) => p.cls.handle))];
     ctx.observerPayments.push(...unseen.map((p) => ({ tx: p.tx, logIndex: p.logIndex, to: p.to, token: p.token, value: p.value, block: p.block, handle: p.cls.handle, listing: p.cls.listing, funder: wallet })));
     const fast = catchUp(gap, marks.length, cycleMinutes, KEYED_RANGE);
-    const slow = catchUp(gap, marks.length, cycleMinutes, CAPPED_RANGE);
     const banked = achievedStride(mark);
     const measured = banked ? catchUp(gap, marks.length, cycleMinutes, banked) : null;
     // railTotal and expectedTotal travel with the wallet so "Today" can state the healed case as a number the
     // reader can check, rather than as the absence of a complaint: what the rail counts before this mark, against
     // what this page finds before it.
-    ctx.observerWallets.push({ wallet, never, gap, behind, unseen: unseen.length, fast, slow, railTotal, expectedTotal, comparable: !!ctx.baseline && !unread.length });
+    ctx.observerWallets.push({ wallet, never, gap, behind, unseen: unseen.length, fast, measured, railTotal, expectedTotal, comparable: !!ctx.baseline && !unread.length });
 
     let state;
     let why;
@@ -337,7 +341,7 @@ export async function scheduleC(ctx) {
       measured && banked
         ? ` Measured, not assumed: this wallet's own last cycle banked ${groupInt(banked)} blocks (last_range_from–last_range_to), and at that rate ${Number.isFinite(measured.cycles) ? `${groupInt(measured.cycles)} cycles, ${hoursText(measured.hours)}` : "it never closes — the cycle banks less than the chain grows while the other wallets take their turns"}.`
         : "";
-    const catchText = fast && slow ? `at the observer's ${groupInt(KEYED_RANGE)} blocks a cycle: ${Number.isFinite(fast.cycles) ? groupInt(fast.cycles) : "no"} cycles, ${hoursText(fast.hours)}; at ${groupInt(CAPPED_RANGE)} a cycle: ${Number.isFinite(slow.cycles) ? groupInt(slow.cycles) : "no"} cycles, ${hoursText(slow.hours)}. Arithmetic on the walk_note (one wallet per ${cycleMinutes}-minute cycle, ${marks.length} wallets), and Base adds ${groupInt(fast.perTurn)} blocks while the other wallets take their turns.${measuredText}` : null;
+    const catchText = fast ? `at the full ${groupInt(KEYED_RANGE)} blocks a cycle the walk_note names: ${Number.isFinite(fast.cycles) ? groupInt(fast.cycles) : "no"} cycles, ${hoursText(fast.hours)}. Arithmetic on the walk_note (one wallet per ${cycleMinutes}-minute cycle, ${marks.length} wallets), and Base adds ${groupInt(fast.perTurn)} blocks while the other wallets take their turns.${measuredText}` : null;
 
     lines.push(
       line({
@@ -376,7 +380,7 @@ export async function scheduleC(ctx) {
           "the bindings each block was classified with: the observer used those that existed when it walked the block; this page uses today's, and counts only payments to a binding filed before the money moved when it compares",
           ...notes,
         ],
-        extra: { mark, payments, gap, never, behind, unseen, fast, slow },
+        extra: { mark, payments, gap, never, behind, unseen, fast, measured },
         cite: `C ${short(wallet)}: observer last_block ${mark.last_block}${gap !== null ? `, ${groupInt(gap)} behind the finalized head two operators agree on (${ctx.finalHead})` : ""}; after it, ${plural(unseen.length, "payment")} by the registry's rule with no receipt, tied at two nodes`,
       })
     );
@@ -384,4 +388,4 @@ export async function scheduleC(ctx) {
   return lines;
 }
 
-export { KEYED_RANGE, CAPPED_RANGE, OBSERVED_TOKENS };
+export { KEYED_RANGE, OBSERVED_TOKENS };

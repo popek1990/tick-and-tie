@@ -27,7 +27,8 @@ async function get(path) {
   throw new Error(`GET ${path} failed`);
 }
 
-const DETAIL = /^binding=(\d+), docket=(listing-\d+), receipt payload sha256=([0-9a-f]{64}), base tx=(0x[0-9a-f]{64}):(\d+)$/;
+// Same shape as parseReceiptDetail in docs/js/checks/receipts.js: a verifier's docket is `listing-N-verifier`.
+const DETAIL = /^binding=(\d+), docket=(listing-\d+(?:-verifier)?), receipt payload sha256=([0-9a-f]{64}), base tx=(0x[0-9a-f]{64}):(\d+)$/;
 const events = await get("/api/events?kind=payout-receipt");
 if (events.has_more) console.error("the event list is paged (has_more): receipts past the first page are read live by the page");
 const bindings = {};
